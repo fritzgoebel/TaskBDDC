@@ -4,5 +4,6 @@ function(build_test test_name)
     add_test(NAME ${test_name}_test COMMAND ${test_name})
 endfunction()
 
+build_test(overlapping_vector)
 build_test(block_matrix)
 build_test(cg)
