@@ -1,0 +1,126 @@
+#include "ginkgo/core/base/executor.hpp"
+#include "ginkgo/core/base/mtx_io.hpp"
+#include "ginkgo/core/base/types.hpp"
+#include "ginkgo/core/distributed/partition.hpp"
+const char* global_location = "@TaskCG_BINARY_DIR@/matrices/global.gko";
+const char* local_0_location = "@TaskCG_BINARY_DIR@/matrices/local_0.gko";
+const char* local_1_location = "@TaskCG_BINARY_DIR@/matrices/local_1.gko";
+const char* local_2_location = "@TaskCG_BINARY_DIR@/matrices/local_2.gko";
+const char* local_3_location = "@TaskCG_BINARY_DIR@/matrices/local_3.gko";
+const char* local_idxs_0_location = "@TaskCG_BINARY_DIR@/matrices/local_idxs_0.txt";
+const char* local_idxs_1_location = "@TaskCG_BINARY_DIR@/matrices/local_idxs_1.txt";
+const char* local_idxs_2_location = "@TaskCG_BINARY_DIR@/matrices/local_idxs_2.txt";
+const char* local_idxs_3_location = "@TaskCG_BINARY_DIR@/matrices/local_idxs_3.txt";
+const char* inner_0_location = "@TaskCG_BINARY_DIR@/matrices/inner_0.txt";
+const char* inner_1_location = "@TaskCG_BINARY_DIR@/matrices/inner_1.txt";
+const char* inner_2_location = "@TaskCG_BINARY_DIR@/matrices/inner_2.txt";
+const char* inner_3_location = "@TaskCG_BINARY_DIR@/matrices/inner_3.txt";
+const char* bndry_0_location = "@TaskCG_BINARY_DIR@/matrices/bndry_0.txt";
+const char* bndry_1_location = "@TaskCG_BINARY_DIR@/matrices/bndry_1.txt";
+const char* bndry_2_location = "@TaskCG_BINARY_DIR@/matrices/bndry_2.txt";
+const char* bndry_3_location = "@TaskCG_BINARY_DIR@/matrices/bndry_3.txt";
+
+namespace matrices {
+
+std::vector<gko::matrix_data<double, int>> local() {
+    std::vector<gko::matrix_data<double, int>> local(4);
+    std::fstream in{};
+    in.open(local_0_location);
+    local[0] = gko::read_binary_raw(in);
+    in.close();
+    in.open(local_1_location);
+    local[1] = gko::read_binary_raw(in);
+    in.close();
+    in.open(local_2_location);
+    local[2] = gko::read_binary_raw(in);
+    in.close();
+    in.open(local_3_location);
+    local[3] = gko::read_binary_raw(in);
+    in.close();
+    return local;
+}
+
+std::vector<std::vector<int>> local_idxs() {
+    std::vector<std::vector<int>> local_idxs(4);
+    std::ifstream local_idxs_0_file(local_idxs_0_location);
+    std::ifstream local_idxs_1_file(local_idxs_1_location);
+    std::ifstream local_idxs_2_file(local_idxs_2_location);
+    std::ifstream local_idxs_3_file(local_idxs_3_location);
+    std::string line;
+    while (std::getline(local_idxs_0_file, line)) {
+        local_idxs[0].push_back(std::stoi(line) - 1);
+    }
+    while (std::getline(local_idxs_1_file, line)) {
+        local_idxs[1].push_back(std::stoi(line) - 1);
+    }
+    while (std::getline(local_idxs_2_file, line)) {
+        local_idxs[2].push_back(std::stoi(line) - 1);
+    }
+    while (std::getline(local_idxs_3_file, line)) {
+        local_idxs[3].push_back(std::stoi(line) - 1);
+    }
+    return local_idxs;
+}
+
+std::shared_ptr<gko::experimental::distributed::Partition<int, int>> build_partition() {
+    auto exec = gko::ReferenceExecutor::create();
+    auto local = local_idxs();
+    gko::size_type global_size = 0;
+    for (int i = 0; i < 4; i++) {
+        global_size += local[i].size();
+    }
+    gko::array<int> map{exec, global_size};
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < local[i].size(); j++) {
+            map.get_data()[local[i][j]] = i;
+        }
+    }
+    auto part = gko::share(gko::experimental::distributed::Partition<int, int>::build_from_mapping(exec, map, 4));
+    return part;
+}
+
+std::vector<std::vector<int>> inner() {
+    std::vector<std::vector<int>> inner(4);
+    std::ifstream inner_0_file(inner_0_location);
+    std::ifstream inner_1_file(inner_1_location);
+    std::ifstream inner_2_file(inner_2_location);
+    std::ifstream inner_3_file(inner_3_location);
+    std::string line;
+    while (inner_0_file >> line) {
+        inner[0].push_back(std::stoi(line) - 1);
+    }
+    while (inner_1_file >> line) {
+        inner[1].push_back(std::stoi(line) - 1);
+    }
+    while (inner_2_file >> line) {
+        inner[2].push_back(std::stoi(line) - 1);
+    }
+    while (inner_3_file >> line) {
+        inner[3].push_back(std::stoi(line) - 1);
+    }
+    return inner;
+}
+
+std::vector<std::vector<int>> bndry() {
+    std::vector<std::vector<int>> bndry(4);
+    std::ifstream bndry_0_file(bndry_0_location);
+    std::ifstream bndry_1_file(bndry_1_location);
+    std::ifstream bndry_2_file(bndry_2_location);
+    std::ifstream bndry_3_file(bndry_3_location);
+    std::string line;
+    while (bndry_0_file >> line) {
+        bndry[0].push_back(std::stoi(line) - 1);
+    }
+    while (bndry_1_file >> line) {
+        bndry[1].push_back(std::stoi(line) - 1);
+    }
+    while (bndry_2_file >> line) {
+        bndry[2].push_back(std::stoi(line) - 1);
+    }
+    while (bndry_3_file >> line) {
+        bndry[3].push_back(std::stoi(line) - 1);
+    }
+    return bndry;
+}
+
+}

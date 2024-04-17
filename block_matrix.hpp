@@ -4,84 +4,161 @@
 
 #include "overlapping_vector.hpp"
 
+#include <set>
+
 struct block_matrix {
     using mtx = gko::matrix::Csr<double, int>;
     using vec = gko::matrix::Dense<double>;
 
-    block_matrix(std::vector<gko::matrix_data<double, int>> local_data, std::vector<std::vector<int>> inner_idxs, std::vector<std::vector<int>> boundary_idxs)
+    block_matrix(std::vector<gko::matrix_data<double, int>> local_data, std::vector<std::vector<int>> inner_idxs, std::vector<std::vector<int>> boundary_idxs) : inner_idxs{inner_idxs}
     {
-#pragma omp parallel
-        {
-#pragma omp single
+        std::cout << "Creating block matrix" << std::endl;
+        size_ = local_data[0].size;
+        auto N = local_data.size();
+        local_mtxs_.resize(N);
+        inner_mtxs_.resize(N);
+        bndry_mtxs_.resize(N);
+        R_.resize(N);
+        RIT_.resize(N);
+        RGT_.resize(N);
+        buf1.resize(N);
+        buf2.resize(N);
+        one = gko::initialize<vec>({1.0}, gko::ReferenceExecutor::create());
+        neg_one = gko::initialize<vec>({-1.0}, gko::ReferenceExecutor::create());
+        
+        std::vector<std::vector<int>> bndry_to_subdomains(size_[0], std::vector<int>());
+        std::set<std::vector<int>> unique_rank_sets;
+        bndry_idxs.resize(N);
+        // Set up mapping from dofs to sharing subdomains
+        for (size_t subdomain = 0; subdomain < N; subdomain++) {
+#pragma omp task shared (bndry_to_subdomains, unique_rank_sets)
             {
-                size_ = local_data[0].size;
-                local_mtxs_.resize(local_data.size());
-                inner_mtxs_.resize(local_data.size());
-                bndry_mtxs_.resize(local_data.size());
-                R_.resize(local_data.size());
-                RIT_.resize(local_data.size());
-                RGT_.resize(local_data.size());
-                buf1.resize(local_data.size());
-                buf2.resize(local_data.size());
-                one = gko::initialize<vec>({1.0}, gko::ReferenceExecutor::create());
-                neg_one = gko::initialize<vec>({-1.0}, gko::ReferenceExecutor::create());
-                for (int i = 0; i < local_data.size(); i++) {
-#pragma omp task
-                    {
-                        auto exec = gko::ReferenceExecutor::create();
-                        std::map<int, int> global_to_local;
-                        std::vector<int> local_to_global;
-                        int idx = 0;
-                        for (auto inner_idx : inner_idxs[i]) {
-                            global_to_local[inner_idx] = idx;
-                            local_to_global.push_back(inner_idx);
-                            idx++;
+                auto local_bndry_idxs = boundary_idxs[subdomain];
+                for (auto bndry_idx : local_bndry_idxs) {
+#pragma omp critical
+                    bndry_to_subdomains[bndry_idx].emplace_back(subdomain);
+                }
+            }
+        }
+#pragma omp taskwait
+        for (size_t i = 0; i < size_[0]; i++) {
+            if (bndry_to_subdomains[i].size() > 0) {
+                std::sort(bndry_to_subdomains[i].begin(), bndry_to_subdomains[i].end());
+                unique_rank_sets.insert(bndry_to_subdomains[i]);
+            }
+        }
+
+        std::cout << "Unique rank sets: " << unique_rank_sets.size() << std::endl;
+        std::vector<std::vector<std::vector<int>>> sets_to_interfaces(unique_rank_sets.size());
+        std::vector<std::vector<int>> sets_to_ranks(unique_rank_sets.size());
+        int idx = 0;
+        // Set up interfaces between subdomains
+        for (auto set : unique_rank_sets) {
+#pragma omp task shared (sets_to_interfaces, sets_to_ranks, idx)
+            {
+                int local_idx;
+#pragma omp atomic capture
+                local_idx = idx++;
+                std::vector<int> dofs;
+                auto local_bndry_idxs = boundary_idxs[set[0]];
+                for (size_t i = 0; i < local_bndry_idxs.size(); i++) {
+                    auto dof = local_bndry_idxs[i];
+                    if (bndry_to_subdomains[dof].size() == set.size()) {
+                        if (bndry_to_subdomains[dof] == set) {
+                            dofs.emplace_back(dof);
                         }
-                        for (auto boundary_idx : boundary_idxs[i]) {
-                            global_to_local[boundary_idx] = idx;
-                            local_to_global.push_back(boundary_idx);
-                            idx++;
+                    }
+                }
+                if (dofs.size() <= set.size()) {
+                    for (auto dof : dofs) {
+                        sets_to_interfaces[local_idx].emplace_back(std::vector<int>{dof});
+                    }
+                } else {
+                    sets_to_interfaces[local_idx].emplace_back(dofs);
+                }
+                sets_to_ranks[local_idx] = set;
+            }
+        }
+#pragma omp taskwait
+        for (size_t i = 0; i < sets_to_interfaces.size(); i++) {
+            for (size_t j = 0; j < sets_to_interfaces[i].size(); j++) {
+                interfaces.emplace_back(sets_to_ranks[i], sets_to_interfaces[i][j]);
+            }
+        }
+        std::cout << "Interfaces: " << interfaces.size() << std::endl;
+        // sort interfaces by dof count
+        std::sort(interfaces.begin(), interfaces.end(), [](auto a, auto b) {
+            return a.second.size() > b.second.size();
+        });
+        local_interfaces.resize(N);
+        for (size_t i = 0; i < N; i++) {
+#pragma omp task shared(local_interfaces, bndry_idxs)
+            {
+                for (size_t j = 0; j < interfaces.size(); j++) {
+                    auto interf = interfaces[j];
+                    if (std::find(interf.first.begin(), interf.first.end(), i) != interf.first.end()) {
+                        for (auto idx : interf.second) {
+                            bndry_idxs[i].emplace_back(idx);
                         }
-                        gko::matrix_data<double, int> data(gko::dim<2>{global_to_local.size(), global_to_local.size()});
-                        gko::matrix_data<double, int> inner_data(gko::dim<2>{inner_idxs[i].size(), global_to_local.size()});
-                        gko::matrix_data<double, int> bndry_data(gko::dim<2>{boundary_idxs[i].size(), global_to_local.size()});
-                        for (auto entry : local_data[i].nonzeros) {
-                            data.nonzeros.emplace_back(global_to_local[entry.row], global_to_local[entry.column], entry.value);
-                            if (global_to_local[entry.row] < inner_idxs[i].size()) {
-                                inner_data.nonzeros.emplace_back(global_to_local[entry.row], global_to_local[entry.column], entry.value);
-                            } else {
-                                bndry_data.nonzeros.emplace_back(global_to_local[entry.row] - inner_idxs.size(), global_to_local[entry.column], entry.value);
-                            }
-                        }
-                        gko::matrix_data<double, int> R_data(gko::dim<2>{global_to_local.size(), size_[1]});
-                        gko::matrix_data<double, int> RIT_data(gko::dim<2>{size_[1], global_to_local.size()});
-                        gko::matrix_data<double, int> RGT_data(gko::dim<2>{size_[1], global_to_local.size()});
-                        for (int j = 0; j < inner_idxs[i].size(); j++) {
-                            R_data.nonzeros.emplace_back(j, inner_idxs[i][j], 1.0);
-                            RIT_data.nonzeros.emplace_back(inner_idxs[i][j], j, 1.0);
-                        }
-                        for (int j = 0; j < boundary_idxs[i].size(); j++) {
-                            R_data.nonzeros.emplace_back(j + inner_idxs[i].size(), boundary_idxs[i][j], 1.0);
-                            RGT_data.nonzeros.emplace_back(boundary_idxs[i][j], j + inner_idxs[i].size(), 1.0);
-                        }
-                        data.sort_row_major();
-                        local_mtxs_[i] = mtx::create(exec);
-                        local_mtxs_[i]->read(data);
-                        R_data.sort_row_major();
-                        R_[i] = mtx::create(exec);
-                        R_[i]->read(R_data);
-                        RIT_data.sort_row_major();
-                        RIT_[i] = mtx::create(exec);
-                        RIT_[i]->read(RIT_data);
-                        RGT_data.sort_row_major();
-                        RGT_[i] = mtx::create(exec);
-                        RGT_[i]->read(RGT_data);
-                        buf1[i] = vec::create(exec, gko::dim<2>{global_to_local.size(), 1});
-                        buf2[i] = vec::create(exec, gko::dim<2>{global_to_local.size(), 1});
+                        local_interfaces[i].emplace_back(j);
                     }
                 }
             }
         }
+#pragma omp taskwait
+        std::cout << "Identified local interfaces" << std::endl;
+        for (int i = 0; i < N; i++) {
+#pragma omp task shared(inner_idxs, bndry_idxs, local_mtxs_, inner_mtxs_, bndry_mtxs_, R_, RIT_, RGT_, buf1, buf2)
+            {
+                auto exec = gko::ReferenceExecutor::create();
+                std::map<int, int> global_to_local{};
+                std::vector<int> local_to_global;
+                int idx = 0;
+                for (auto inner_idx : inner_idxs[i]) {
+                    global_to_local[inner_idx] = idx;
+                    local_to_global.push_back(inner_idx);
+                    idx++;
+                }
+                for (auto boundary_idx : bndry_idxs[i]) {
+                    global_to_local[boundary_idx] = idx;
+                    local_to_global.push_back(boundary_idx);
+                    idx++;
+                }
+                gko::matrix_data<double, int> data(gko::dim<2>{global_to_local.size(), global_to_local.size()});
+                for (auto entry : local_data[i].nonzeros) {
+                    data.nonzeros.emplace_back(global_to_local[entry.row], global_to_local[entry.column], entry.value);
+                }
+                gko::matrix_data<double, int> R_data(gko::dim<2>{global_to_local.size(), size_[1]});
+                gko::matrix_data<double, int> RIT_data(gko::dim<2>{size_[1], global_to_local.size()});
+                gko::matrix_data<double, int> RGT_data(gko::dim<2>{size_[1], global_to_local.size()});
+                for (int j = 0; j < inner_idxs[i].size(); j++) {
+                    R_data.nonzeros.emplace_back(j, inner_idxs[i][j], 1.0);
+                    RIT_data.nonzeros.emplace_back(inner_idxs[i][j], j, 1.0);
+                }
+                for (int j = 0; j < bndry_idxs[i].size(); j++) {
+                    R_data.nonzeros.emplace_back(j + inner_idxs[i].size(), bndry_idxs[i][j], 1.0);
+                    RGT_data.nonzeros.emplace_back(bndry_idxs[i][j], j + inner_idxs[i].size(), 1.0);
+                }
+                data.sort_row_major();
+                local_mtxs_[i] = mtx::create(exec);
+                local_mtxs_[i]->read(data);
+                R_data.sort_row_major();
+                R_[i] = mtx::create(exec);
+                R_[i]->read(R_data);
+                RIT_data.sort_row_major();
+                RIT_[i] = mtx::create(exec);
+                RIT_[i]->read(RIT_data);
+                RGT_data.sort_row_major();
+                RGT_[i] = mtx::create(exec);
+                RGT_[i]->read(RGT_data);
+                buf1[i] = vec::create(exec, gko::dim<2>{global_to_local.size(), 1});
+                buf2[i] = vec::create(exec, gko::dim<2>{global_to_local.size(), 1});
+                inner_mtxs_[i] = gko::share(local_mtxs_[i]->create_submatrix(gko::span{0, inner_idxs[i].size()}, gko::span{0, local_mtxs_[i]->get_size()[1]}));
+                bndry_mtxs_[i] = gko::share(local_mtxs_[i]->create_submatrix(gko::span{inner_idxs[i].size(), local_mtxs_[i]->get_size()[1]}, gko::span{0, local_mtxs_[i]->get_size()[1]}));
+            }
+        }
+#pragma omp taskwait
+        std::cout << "Block matrix created" << std::endl;
     }
 
     void apply_local(int i, std::shared_ptr<vec> x, std::shared_ptr<vec> y)
@@ -97,18 +174,12 @@ struct block_matrix {
 
     void apply(std::shared_ptr<vec> x, std::shared_ptr<vec> y)
     {
-#pragma omp parallel
-        {
-#pragma omp single
-            {
-                y->fill(0.0);
-                for (int i = 0; i < local_mtxs_.size(); i++) {
+        y->fill(0.0);
+        for (int i = 0; i < local_mtxs_.size(); i++) {
 #pragma omp task shared(x, y)
-                    apply_local(i, x, y);
-                }
-#pragma omp taskwait
-            }
+            apply_local(i, x, y);
         }
+#pragma omp taskwait
     }
 
     void apply(std::shared_ptr<vec> alpha, std::shared_ptr<vec> x, std::shared_ptr<vec> beta, std::shared_ptr<vec> y)
@@ -121,33 +192,28 @@ struct block_matrix {
 
     void apply_bndry(std::shared_ptr<overlapping_vector> x, std::shared_ptr<overlapping_vector> y)
     {
-#pragma omp parallel
-        {
-#pragma omp single
-            {
-                for (int i = 0; i < local_mtxs_.size(); i++) {
+        for (int i = 0; i < local_mtxs_.size(); i++) {
 #pragma omp task depend (in: x->inner_data[i], x->bndry_data[i]) depend(out: y->bndry_data[i])
-                    bndry_mtxs_[i]->apply(x->bndry_data[i], y->bndry_data[i]);
-                }
-#pragma omp task
-                y->make_consistent();
-            }
+            bndry_mtxs_[i]->apply(x->data[i], y->bndry_data[i]);
         }
+        y->make_consistent();
     }
 
     void apply(std::shared_ptr<overlapping_vector> x, std::shared_ptr<overlapping_vector> y)
     {
-#pragma omp parallel
-        {
-#pragma omp single
-            {
-                apply_bndry(x, y);
-                for (int i = 0; i < local_mtxs_.size(); i++) {
+        apply_bndry(x, y);
+        for (int i = 0; i < local_mtxs_.size(); i++) {
 #pragma omp task depend (in: x->inner_data[i], x->bndry_data[i]) depend(out: y->inner_data[i])
-                    inner_mtxs_[i]->apply(x->data[i], y->inner_data[i]);
-                }
-            }
+            inner_mtxs_[i]->apply(x->data[i], y->inner_data[i]);
         }
+    }
+
+    void apply(std::shared_ptr<vec> alpha, std::shared_ptr<overlapping_vector> x, std::shared_ptr<vec> beta, std::shared_ptr<overlapping_vector> y)
+    {
+        auto y_clone = y->clone();
+        this->apply(x, y_clone);
+        y->scale(beta);
+        y->add_scaled(alpha, y_clone);
     }
 
 
@@ -162,4 +228,8 @@ struct block_matrix {
     std::shared_ptr<vec> one;
     std::shared_ptr<vec> neg_one;
     gko::dim<2> size_;
+    std::vector<std::vector<int>> inner_idxs;
+    std::vector<std::vector<int>> bndry_idxs;
+    std::vector<std::pair<std::vector<int>, std::vector<int>>> interfaces;
+    std::vector<std::vector<int>> local_interfaces;
 };

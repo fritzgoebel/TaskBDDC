@@ -4,19 +4,8 @@
 #include <ginkgo/ginkgo.hpp>
 #include <vector>
 
-#include "ginkgo/core/distributed/partition.hpp"
 #include "ginkgo/core/matrix/dense.hpp"
-
-overlapping_vector setup_three_part_vector() {
-    using part = gko::experimental::distributed::Partition<int, int>;
-    std::vector<std::vector<int>> inner_idxs{{0, 1, 2, 3, 4, 5, 6}, {10, 11, 12, 13, 14, 15, 16}, {20, 21, 22, 23, 24, 25, 26}};
-    std::vector<std::vector<int>> bndry_idxs{{7, 8, 9, 17, 19, 27, 29}, {7, 9, 17, 18, 19, 28, 29}, {8, 9, 18, 19, 27, 28, 29}};
-    auto exec = gko::ReferenceExecutor::create();
-    auto partition = gko::share(part::build_from_global_size_uniform(exec, 3, 30));
-
-    auto vec = overlapping_vector(inner_idxs, bndry_idxs, partition, 30);
-    return vec;
-}
+#include "vector_utils.hpp"
 
 TEST(OverlappingVector, ConstructorSinglePart) {
     using part = gko::experimental::distributed::Partition<int, int>;
@@ -25,14 +14,28 @@ TEST(OverlappingVector, ConstructorSinglePart) {
     auto exec = gko::ReferenceExecutor::create();
     auto partition = gko::share(part::build_from_global_size_uniform(exec, 1, 10));
 
-    auto vec = overlapping_vector(inner_idxs, bndry_idxs, partition, 10);
+    overlapping_vector vec;
+#pragma omp parallel
+    {
+#pragma omp single
+        {
+            vec = overlapping_vector(inner_idxs, bndry_idxs, partition, 10);
+        }
+    }
     ASSERT_EQ(vec.get_size()[0], 10);
     ASSERT_EQ(vec.get_size()[1], 1);
     ASSERT_EQ(vec.get_num_parts(), 1);
 }
 
 TEST(OverlappingVector, ConstructorMultipleParts) {
-    auto vec = setup_three_part_vector();
+    overlapping_vector vec;
+#pragma omp parallel
+    {
+#pragma omp single
+        {
+            vec = setup_three_part_vector();
+        }
+    }
 
     ASSERT_EQ(vec.get_size()[0], 30);
     ASSERT_EQ(vec.get_size()[1], 1);
@@ -45,8 +48,15 @@ TEST(OverlappingVector, ConstructorMultipleParts) {
 }
 
 TEST(OverlappingVector, Fill) {
-    auto vec = setup_three_part_vector();
-    vec.fill(1.0);
+    overlapping_vector vec;
+#pragma omp parallel
+    {
+#pragma omp single
+        {
+            vec = setup_three_part_vector();
+            vec.fill(1.0);
+        }
+    }
 
     for (int i = 0; i < 3; i++) {
         for (int j = 0; j < 7; j++) {
@@ -96,4 +106,77 @@ TEST(OverlappingVector, Dot) {
     vec1->dot(vec2, res);
 
     ASSERT_EQ(res->at(0, 0), 60.0);
+}
+
+TEST(OverlappingVector, RestrictProlongate) {
+    using vec = gko::matrix::Dense<double>;
+    auto exec = gko::ReferenceExecutor::create();
+    auto ref = gko::share(vec::create(exec, gko::dim<2>{30, 1}));
+    std::iota(ref->get_values(), ref->get_values() + 30, 0.0);
+    auto x = gko::share(clone(ref));
+    x->fill(0.0);
+    auto y = setup_three_part_vector();
+#pragma omp parallel
+    {
+#pragma omp single
+        {
+            y.restrict(ref);
+            y.prolongate(x);
+        }
+    }
+    for (int i = 0; i < 30; i++) {
+        ASSERT_EQ(ref->at(i, 0), x->at(i, 0));
+    }
+}
+
+TEST(OverlappingVector, Scale) {
+    using vec = gko::matrix::Dense<double>;
+    auto exec = gko::ReferenceExecutor::create();
+    auto ref = gko::share(vec::create(exec, gko::dim<2>{30, 1}));
+    std::iota(ref->get_values(), ref->get_values() + 30, 0.0);
+    auto alpha = gko::share(gko::initialize<vec>({2.0}, exec));
+    auto x = gko::share(clone(ref));
+    x->fill(0.0);
+    auto y = setup_three_part_vector();
+#pragma omp parallel
+    {
+#pragma omp single
+        {
+            y.restrict(ref);
+            y.scale(alpha);
+            y.prolongate(x);
+        }
+    }
+    ref->scale(alpha);
+    for (int i = 0; i < 30; i++) {
+        ASSERT_EQ(ref->at(i, 0), x->at(i, 0));
+    }
+}
+
+TEST(OverlappingVector, AddScaled) {
+    using vec = gko::matrix::Dense<double>;
+    auto exec = gko::ReferenceExecutor::create();
+    auto ref = gko::share(vec::create(exec, gko::dim<2>{30, 1}));
+    auto ref1 = gko::share(gko::clone(ref));
+    std::iota(ref->get_values(), ref->get_values() + 30, 0.0);
+    ref1->fill(1.0);
+    auto alpha = gko::share(gko::initialize<vec>({2.0}, exec));
+    auto x = gko::share(clone(ref));
+    x->fill(0.0);
+    auto y = setup_three_part_vector();
+    auto y1 = std::make_shared<overlapping_vector>(setup_three_part_vector());
+#pragma omp parallel
+    {
+#pragma omp single
+        {
+            y.restrict(ref);
+            y1->restrict(ref1);
+            y.add_scaled(alpha, y1);
+            y.prolongate(x);
+        }
+    }
+    ref->add_scaled(alpha, ref1);
+    for (int i = 0; i < 30; i++) {
+        ASSERT_EQ(ref->at(i, 0), x->at(i, 0));
+    }
 }

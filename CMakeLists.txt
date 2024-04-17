@@ -26,9 +26,13 @@ FetchContent_MakeAvailable(googletest)
 
 include_directories(${MPI_INCLUDE_PATH} $ENV{HOME}/install/include)
 
-add_executable(main main.cpp)
+add_executable(task_bddc main.cpp)
 
-target_link_libraries(main PRIVATE ginkgo ginkgo_cuda ginkgo_reference ginkgo_hip ginkgo_dpcpp ginkgo_omp ginkgo_device)
+target_include_directories(task_bddc PRIVATE ${TaskCG_BINARY_DIR})
+target_link_libraries(task_bddc PRIVATE ginkgo ginkgo_cuda ginkgo_reference ginkgo_hip ginkgo_dpcpp ginkgo_omp ginkgo_device)
+#target_link_libraries(task_bddc PRIVATE ginkgod ginkgo_cudad ginkgo_referenced ginkgo_hipd ginkgo_dpcppd ginkgo_ompd ginkgo_deviced)
+
+add_subdirectory(matrices)
 
 add_subdirectory(test)
 include(CTest)
