@@ -94,6 +94,7 @@ int main(const int argc, const char *argv[]) {
             const auto n = std::stoi(argv[2]);
             const auto max_it = std::stoi(argv[3]);
             const auto tol = std::stod(argv[4]);
+            const auto rep = std::stoi(argv[5]);
 
             std::cout << "Setting up problem " << dir << " for " << n << " subdomains" << std::endl;
             std::cout << "Reading data..." << std::endl;
@@ -135,6 +136,20 @@ int main(const int argc, const char *argv[]) {
             std::cout << "Solving..." << std::endl;
             solver.apply(b, x);
 #pragma omp taskwait
+            std::cout << "done" << std::endl;
+            std::cout << "Running " << rep << " benchmark runs..." << std::endl;
+            double duration = 0.0;
+            for (int i = 0; i < rep; i++) {
+                std::cout << "Run " << i << std::endl;
+                x->fill(0.0);
+#pragma omp taskwait
+                auto start = omp_get_wtime();
+                solver.apply(b, x);
+#pragma omp taskwait
+                auto end = omp_get_wtime();
+                duration += end - start;
+            }
+            std::cout << "Average duration: " << duration / rep << "s" << std::endl;
             std::cout << "done" << std::endl;
             std::cout << "Prolongating solution..." << std::endl;
             x->prolongate(sol);

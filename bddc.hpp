@@ -313,7 +313,7 @@ struct bddc{
             {
                 weights[i]->apply(workspace_1->bndry_data[i], workspace_1->bndry_data[i]);
             }
-#pragma omp task depend (in: workspace_1->bndry_data[i]) depend (out: coarse_rhs)
+#pragma omp task depend (in: workspace_1->bndry_data[i]) depend (out: this->coarse_rhs)
             {
 #pragma omp critical
                 phi_t[i]->apply(one, workspace_1->bndry_data[i], one, coarse_rhs);
@@ -340,13 +340,13 @@ struct bddc{
                 c_lhs->fill(0.0);
             }
         }
-#pragma omp task shared (coarse_rhs, coarse_sol) depend (in: coarse_rhs) depend (out: coarse_sol)
+#pragma omp task shared (coarse_rhs, coarse_sol) depend (in: this->coarse_rhs) depend (out: this->coarse_sol)
         {
             coarse_solver->apply(coarse_rhs, coarse_sol);
         }
 
         for (size_t i = 0; i < N; i++) {
-#pragma omp task depend (in: coarse_sol) depend (inout: workspace_2->bndry_data[i])
+#pragma omp task depend (in: this->coarse_sol) depend (inout: workspace_2->bndry_data[i])
             {
                 phi[i]->apply(one, coarse_sol, one, workspace_2->bndry_data[i]);
                 weights[i]->apply(workspace_2->bndry_data[i], workspace_2->bndry_data[i]);

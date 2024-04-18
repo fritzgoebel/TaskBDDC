@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <ginkgo/ginkgo.hpp>
+#include <iterator>
 #include <memory>
 #include <omp.h>
 
@@ -9,6 +11,46 @@
 struct block_matrix {
     using mtx = gko::matrix::Csr<double, int>;
     using vec = gko::matrix::Dense<double>;
+
+    std::vector<std::pair<std::vector<int>, std::vector<int>>> intersect(std::vector<std::pair<std::vector<int>, std::vector<int>>> pairs, int subdomain, std::vector<int> dofs)
+    {
+        std::vector<std::pair<std::vector<int>, std::vector<int>>> result(2 * pairs.size() + 1);
+//#pragma omp taskloop shared(pairs, dofs, result)
+        for (size_t i = 0; i < pairs.size(); i++) {
+            result[2 * i] = std::make_pair(pairs[i].first, std::vector<int>());
+            std::set_difference(
+                    pairs[i].second.begin(), pairs[i].second.end(), 
+                    dofs.begin(), dofs.end(), std::back_inserter(result[2 * i].second)); // a - b
+            if (result[2 * i].second.size() <= result[2 * i].first.size()) {
+                for (auto idx : result[2 * i].second) {
+                    result.emplace_back(result[2 * i].first, std::vector<int>{idx});
+                }
+                result[2 * i].second.clear();
+            }
+            result[2 * i + 1] = std::make_pair(pairs[i].first, std::vector<int>());
+            result[2 * i + 1].first.emplace_back(subdomain);
+            std::set_intersection(
+                    pairs[i].second.begin(), pairs[i].second.end(), 
+                    dofs.begin(), dofs.end(), std::back_inserter(result[2 * i + 1].second)); // a & b
+            if (result[2 * i + 1].second.size() <= result[2 * i + 1].first.size()) {
+                for (auto idx : result[2 * i + 1].second) {
+                    result.emplace_back(result[2 * i + 1].first, std::vector<int>{idx});
+                }
+                result[2 * i + 1].second.clear();
+            }
+        }
+        result[2 * pairs.size()].first = {subdomain};
+        result[2 * pairs.size()].second = dofs;
+        for (size_t i = 0; i < pairs.size(); i++) {
+            result[2 * pairs.size()].second.erase(std::remove_if(result[2 * pairs.size()].second.begin(), result[2 * pairs.size()].second.end(), [&](auto a) {
+                return std::find(pairs[i].second.begin(), pairs[i].second.end(), a) != pairs[i].second.end();
+            }), result[2 * pairs.size()].second.end());
+        }
+        result.erase(std::remove_if(result.begin(), result.end(), [](auto a) {
+            return a.second.size() == 0;
+        }), result.end());
+        return result;
+    }
 
     block_matrix(std::vector<gko::matrix_data<double, int>> local_data, std::vector<std::vector<int>> inner_idxs, std::vector<std::vector<int>> boundary_idxs) : inner_idxs{inner_idxs}
     {
@@ -31,8 +73,9 @@ struct block_matrix {
         bndry_idxs.resize(N);
         // Set up mapping from dofs to sharing subdomains
         for (size_t subdomain = 0; subdomain < N; subdomain++) {
-#pragma omp task shared (bndry_to_subdomains, unique_rank_sets)
+#pragma omp task shared (bndry_to_subdomains, unique_rank_sets, boundary_idxs)
             {
+                std::sort(boundary_idxs[subdomain].begin(), boundary_idxs[subdomain].end());
                 auto local_bndry_idxs = boundary_idxs[subdomain];
                 for (auto bndry_idx : local_bndry_idxs) {
 #pragma omp critical
@@ -50,41 +93,52 @@ struct block_matrix {
 
         std::cout << "Unique rank sets: " << unique_rank_sets.size() << std::endl;
         std::vector<std::vector<std::vector<int>>> sets_to_interfaces(unique_rank_sets.size());
-        std::vector<std::vector<int>> sets_to_ranks(unique_rank_sets.size());
+        std::vector<std::vector<int>> unique_rank_vecs(unique_rank_sets.begin(), unique_rank_sets.end());
         int idx = 0;
         // Set up interfaces between subdomains
-        for (auto set : unique_rank_sets) {
-#pragma omp task shared (sets_to_interfaces, sets_to_ranks, idx)
-            {
-                int local_idx;
-#pragma omp atomic capture
-                local_idx = idx++;
-                std::vector<int> dofs;
-                auto local_bndry_idxs = boundary_idxs[set[0]];
-                for (size_t i = 0; i < local_bndry_idxs.size(); i++) {
-                    auto dof = local_bndry_idxs[i];
-                    if (bndry_to_subdomains[dof].size() == set.size()) {
-                        if (bndry_to_subdomains[dof] == set) {
-                            dofs.emplace_back(dof);
-                        }
+//#pragma omp taskloop shared (sets_to_interfaces, idx, unique_rank_vecs)
+        for (int i = 0; i < unique_rank_vecs.size(); i++) {
+            auto set = unique_rank_vecs[i];
+            std::vector<int> dofs;
+            auto local_bndry_idxs = boundary_idxs[set[0]];
+            for (size_t i = 0; i < local_bndry_idxs.size(); i++) {
+                auto dof = local_bndry_idxs[i];
+                if (bndry_to_subdomains[dof].size() == set.size()) {
+                    if (bndry_to_subdomains[dof] == set) {
+                        dofs.emplace_back(dof);
                     }
                 }
-                if (dofs.size() <= set.size()) {
-                    for (auto dof : dofs) {
-                        sets_to_interfaces[local_idx].emplace_back(std::vector<int>{dof});
-                    }
-                } else {
-                    sets_to_interfaces[local_idx].emplace_back(dofs);
+            }
+            if (dofs.size() <= set.size()) {
+                for (auto dof : dofs) {
+                    sets_to_interfaces[i].emplace_back(std::vector<int>{dof});
                 }
-                sets_to_ranks[local_idx] = set;
+            } else {
+                sets_to_interfaces[i].emplace_back(dofs);
             }
         }
-#pragma omp taskwait
         for (size_t i = 0; i < sets_to_interfaces.size(); i++) {
             for (size_t j = 0; j < sets_to_interfaces[i].size(); j++) {
-                interfaces.emplace_back(sets_to_ranks[i], sets_to_interfaces[i][j]);
+                interfaces.emplace_back(unique_rank_vecs[i], sets_to_interfaces[i][j]);
             }
         }
+        /* interfaces.emplace_back(std::vector<int>{0}, boundary_idxs[0]); */
+        /* for (int subdomain = 1; subdomain < N; subdomain++) { */
+        /*     std::cout << interfaces.size() << " " << boundary_idxs[subdomain].size() << std::endl; */
+        /*     interfaces = intersect(interfaces, subdomain, boundary_idxs[subdomain]); */
+        /*     std::cout << "--------------------------------------------------------------" << std::endl; */
+        /*     for (int i = 0; i < interfaces.size(); i++) { */
+        /*         std::cout << "Interface " << i << ": "; */
+        /*         for (auto idx : interfaces[i].first) { */
+        /*             std::cout << idx << " "; */
+        /*         } */
+        /*         std::cout << " | "; */
+        /*         for (auto idx : interfaces[i].second) { */
+        /*             std::cout << idx << " "; */
+        /*         } */
+        /*         std::cout << std::endl; */
+        /*     } */
+        /* } */
         std::cout << "Interfaces: " << interfaces.size() << std::endl;
         // sort interfaces by dof count
         std::sort(interfaces.begin(), interfaces.end(), [](auto a, auto b) {
