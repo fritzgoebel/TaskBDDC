@@ -5,6 +5,8 @@
 #include <memory>
 #include <omp.h>
 
+#include "omptasktool.h"
+
 using mat_data = gko::matrix_data<double, int>;
 using mtx = gko::matrix::Csr<double, int>;
 using part = gko::experimental::distributed::Partition<int, int>;
@@ -13,7 +15,7 @@ using vec = gko::matrix::Dense<double>;
 std::vector<std::vector<int>> read_idxs(const char* dir, int n) {
     std::vector<std::vector<int>> idxs(n);
     for (int i = 0; i < n; i++) {
-#pragma omp task shared(idxs)
+//#pragma omp task shared(idxs)
         {
             std::string filename = std::string(dir) + "/local_idxs_" + std::to_string(i) + ".txt";
             std::ifstream in{filename};
@@ -23,14 +25,14 @@ std::vector<std::vector<int>> read_idxs(const char* dir, int n) {
             }
         }
     }
-#pragma omp taskwait
+//#pragma omp taskwait
     return idxs;
 }
 
 std::vector<std::vector<int>> read_inner(const char* dir, int n) {
     std::vector<std::vector<int>> idxs(n);
     for (int i = 0; i < n; i++) {
-#pragma omp task shared(idxs)
+//#pragma omp task shared(idxs)
         {
             std::string filename = std::string(dir) + "/inner_" + std::to_string(i) + ".txt";
             std::ifstream in{filename};
@@ -40,14 +42,14 @@ std::vector<std::vector<int>> read_inner(const char* dir, int n) {
             }
         }
     }
-#pragma omp taskwait
+//#pragma omp taskwait
     return idxs;
 }
 
 std::vector<std::vector<int>> read_bndry(const char* dir, int n) {
     std::vector<std::vector<int>> idxs(n);
     for (int i = 0; i < n; i++) {
-#pragma omp task shared(idxs)
+//#pragma omp task shared(idxs)
         {
             std::string filename = std::string(dir) + "/bndry_" + std::to_string(i) + ".txt";
             std::ifstream in{filename};
@@ -57,14 +59,14 @@ std::vector<std::vector<int>> read_bndry(const char* dir, int n) {
             }
         }
     }
-#pragma omp taskwait
+//#pragma omp taskwait
     return idxs;
 }
 
 std::vector<mat_data> read_matrices(const char* dir, int n) {
     std::vector<mat_data> matrices(n);
     for (int i = 0; i < n; i++) {
-#pragma omp task shared(matrices)
+//#pragma omp task shared(matrices)
         {
             std::string filename = std::string(dir) + "/local_" + std::to_string(i) + ".gko";
             std::ifstream in{filename};
@@ -72,7 +74,7 @@ std::vector<mat_data> read_matrices(const char* dir, int n) {
             matrices[i] = data;
         }
     }
-#pragma omp taskwait
+//#pragma omp taskwait
     return matrices;
 }
 
@@ -84,10 +86,10 @@ std::shared_ptr<vec> read_rhs(const char* dir) {
 }
 
 int main(const int argc, const char *argv[]) {
-#pragma omp parallel
-    {
-#pragma omp single
-        {
+/* #pragma omp parallel */
+/*     { */
+/* #pragma omp single */
+/*         { */
             auto exec = gko::ReferenceExecutor::create();
 
             const auto dir = argv[1];
@@ -104,7 +106,7 @@ int main(const int argc, const char *argv[]) {
             auto local_data = read_matrices(dir, n);
             auto rhs = read_rhs(dir);
             auto sol = gko::share(gko::clone(rhs));
-#pragma omp taskwait
+/* #pragma omp taskwait */
             std::cout << "done" << std::endl;
             std::cout << "Setting up partition..." << std::endl;
 
@@ -120,32 +122,39 @@ int main(const int argc, const char *argv[]) {
             std::cout << "done" << std::endl;
             std::cout << "Setting up matrix..." << std::endl;
             auto A = std::make_shared<block_matrix>(block_matrix(local_data, inner, bndry));
-#pragma omp taskwait
+/* #pragma omp taskwait */
             std::cout << "done" << std::endl;
             std::cout << "Setting up vectors..." << std::endl;
             auto b = std::make_shared<overlapping_vector>(overlapping_vector(A->inner_idxs, A->bndry_idxs, partition, n_rows));
             auto x = std::make_shared<overlapping_vector>(overlapping_vector(A->inner_idxs, A->bndry_idxs, partition, n_rows));
             x->fill(0.0);
             b->restrict(rhs);
-#pragma omp taskwait
+/* #pragma omp taskwait */
             std::cout << "done" << std::endl;
             std::cout << "Setting up solver..." << std::endl;
-            auto solver = cg(A, max_it, tol, x);
+            std::shared_ptr<cg> solver;
+#pragma omp parallel
+            {
+#pragma omp single
+                {
+                    solver = std::make_shared<cg>(cg(A, max_it, tol, x));
 #pragma omp taskwait
-            std::cout << "done" << std::endl;
-            std::cout << "Solving..." << std::endl;
-            solver.apply(b, x);
-#pragma omp taskwait
+                    std::cout << "done" << std::endl;
+                    std::cout << "Solving..." << std::endl;
+                    solver->apply(b, x);
+                }
+            }
+/* #pragma omp taskwait */
             std::cout << "done" << std::endl;
             std::cout << "Running " << rep << " benchmark runs..." << std::endl;
             double duration = 0.0;
             for (int i = 0; i < rep; i++) {
                 std::cout << "Run " << i << std::endl;
                 x->fill(0.0);
-#pragma omp taskwait
+/* #pragma omp taskwait */
                 auto start = omp_get_wtime();
-                solver.apply(b, x);
-#pragma omp taskwait
+                solver->apply(b, x);
+/* #pragma omp taskwait */
                 auto end = omp_get_wtime();
                 duration += end - start;
             }
@@ -153,13 +162,13 @@ int main(const int argc, const char *argv[]) {
             std::cout << "done" << std::endl;
             std::cout << "Prolongating solution..." << std::endl;
             x->prolongate(sol);
-#pragma omp taskwait
+/* #pragma omp taskwait */
             std::cout << "done" << std::endl;
             std::cout << "Writing solution..." << std::endl;
 
             std::ofstream out{"sol.mtx"};
             gko::write(out, sol);
             std::cout << "done" << std::endl;
-        }
-    }
+        /* } */
+    /* } */
 }

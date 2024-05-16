@@ -42,7 +42,7 @@ struct cg {
         r->copy_from(b);
         A->apply(neg_one_op, x, one_op, r);
         rho_old->at(0,0) = 1.0;
-        /* //p->copy_from(r); */
+        /* p->copy_from(r); */
         /* prec->apply(r, p); */
         /* r->dot(p, rho); */
         /* rho_old->copy_from(rho); */

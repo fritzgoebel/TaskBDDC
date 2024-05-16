@@ -26,7 +26,11 @@ FetchContent_MakeAvailable(googletest)
 
 include_directories(${MPI_INCLUDE_PATH} $ENV{HOME}/install/include)
 
+add_library(omp_task_tool SHARED omptasktool.c)
 add_executable(task_bddc main.cpp)
+add_executable(hello_world hello_world.cpp)
+
+target_compile_definitions(task_bddc PUBLIC -DDYN_TOOL)
 
 target_include_directories(task_bddc PRIVATE ${TaskCG_BINARY_DIR})
 target_link_libraries(task_bddc PRIVATE ginkgo ginkgo_cuda ginkgo_reference ginkgo_hip ginkgo_dpcpp ginkgo_omp ginkgo_device)

@@ -73,17 +73,17 @@ struct block_matrix {
         bndry_idxs.resize(N);
         // Set up mapping from dofs to sharing subdomains
         for (size_t subdomain = 0; subdomain < N; subdomain++) {
-#pragma omp task shared (bndry_to_subdomains, unique_rank_sets, boundary_idxs)
+//#pragma omp task shared (bndry_to_subdomains, unique_rank_sets, boundary_idxs)
             {
                 std::sort(boundary_idxs[subdomain].begin(), boundary_idxs[subdomain].end());
                 auto local_bndry_idxs = boundary_idxs[subdomain];
                 for (auto bndry_idx : local_bndry_idxs) {
-#pragma omp critical
+//#pragma omp critical
                     bndry_to_subdomains[bndry_idx].emplace_back(subdomain);
                 }
             }
         }
-#pragma omp taskwait
+//#pragma omp taskwait
         for (size_t i = 0; i < size_[0]; i++) {
             if (bndry_to_subdomains[i].size() > 0) {
                 std::sort(bndry_to_subdomains[i].begin(), bndry_to_subdomains[i].end());
@@ -146,7 +146,7 @@ struct block_matrix {
         });
         local_interfaces.resize(N);
         for (size_t i = 0; i < N; i++) {
-#pragma omp task shared(local_interfaces, bndry_idxs)
+//#pragma omp task shared(local_interfaces, bndry_idxs)
             {
                 for (size_t j = 0; j < interfaces.size(); j++) {
                     auto interf = interfaces[j];
@@ -159,10 +159,10 @@ struct block_matrix {
                 }
             }
         }
-#pragma omp taskwait
+//#pragma omp taskwait
         std::cout << "Identified local interfaces" << std::endl;
         for (int i = 0; i < N; i++) {
-#pragma omp task shared(inner_idxs, bndry_idxs, local_mtxs_, inner_mtxs_, bndry_mtxs_, R_, RIT_, RGT_, buf1, buf2)
+//#pragma omp task shared(inner_idxs, bndry_idxs, local_mtxs_, inner_mtxs_, bndry_mtxs_, R_, RIT_, RGT_, buf1, buf2)
             {
                 auto exec = gko::ReferenceExecutor::create();
                 std::map<int, int> global_to_local{};
@@ -211,7 +211,7 @@ struct block_matrix {
                 bndry_mtxs_[i] = gko::share(local_mtxs_[i]->create_submatrix(gko::span{inner_idxs[i].size(), local_mtxs_[i]->get_size()[1]}, gko::span{0, local_mtxs_[i]->get_size()[1]}));
             }
         }
-#pragma omp taskwait
+//#pragma omp taskwait
         std::cout << "Block matrix created" << std::endl;
     }
 

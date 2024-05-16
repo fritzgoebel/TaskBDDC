@@ -23,6 +23,7 @@ struct bddc{
         workspace_1 = buffer->clone();
         workspace_2 = buffer->clone();
         workspace_3 = buffer->clone();
+#pragma omp taskwait
         for (size_t i = 0; i < N; i++) {
 #pragma omp task shared(inner_solvers)
             {
@@ -159,7 +160,7 @@ struct bddc{
                         /* setup_solvers[j]->apply(rhs, sol); */
                     /* } */
                 }
-#pragma omp taskwait
+//#pragma omp taskwait
                 C[i]->apply(intermediate, local_schur_complement);
                 auto ls = gko::share(mtx::create(exec));
                 ls->copy_from(local_schur_complement);
@@ -203,7 +204,7 @@ struct bddc{
                         /* setup_solvers[j]->apply(rhs_sub, sol_sub); */
                     /* } */
                 }
-#pragma omp taskwait
+//#pragma omp taskwait
                 C[i]->apply(one, schur_interm, neg_one, schur_rhs);
                 for (size_t j = 0; j < n_edges + n_corner_dofs; j++) {
                     auto rhs_sub = schur_rhs->create_submatrix(gko::span{0, n_edges}, gko::span{j, j + 1});
@@ -222,7 +223,7 @@ struct bddc{
                         /* setup_solvers[j]->apply(rhs_sub, phi_sub); */
                     /* } */
                 }
-#pragma omp taskwait
+//#pragma omp taskwait
                 A_cc->apply(phi_c, lambda_c);
                 A_ce->apply(neg_one, phi_e, neg_one, lambda_c);
                 gko::matrix_data<double, int> phi_data(gko::dim<2>{n_edge_dofs + n_corner_dofs, interfaces.size()});

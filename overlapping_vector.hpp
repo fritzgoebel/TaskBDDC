@@ -57,7 +57,7 @@ struct overlapping_vector {
         R.resize(N);
         RT.resize(N);
         for (gko::size_type i = 0; i < N; i++) {
-#pragma omp task 
+//#pragma omp task 
             {
                 auto exec = gko::ReferenceExecutor::create();
                 gko::size_type local_size = inner_idxs[i].size() + bndry_idxs[i].size();
@@ -98,20 +98,20 @@ struct overlapping_vector {
                 }
             }
         }
-#pragma omp taskwait
+//#pragma omp taskwait
     }
 
     void dot(std::shared_ptr<overlapping_vector> other, std::shared_ptr<vec> result)
     {
         result->at(0,0) = 0.0;
         for (int i = 0; i < data.size(); i++) {
-#pragma omp task depend (in: other->inner_data[i], this->inner_data[i]) depend (out: result)
+#pragma omp task shared(result) depend (in: other->inner_data[i], this->inner_data[i]) //depend (out: result)
             {
                 inner_data[i]->compute_dot(other->inner_data[i], inner_results[i]);
 #pragma omp atomic
                 result->at(0,0) += inner_results[i]->at(0, 0);
             }
-#pragma omp task depend (in: other->bndry_data[i], this->bndry_data[i]) depend (out: result)
+#pragma omp task shared(result) depend (in: other->bndry_data[i], this->bndry_data[i]) //depend (out: result)
             {
                 double local_res = 0.0;
                 for (size_t j = 0; j < owning_bndry_idxs_[i].size() / 2; j++) {
@@ -122,6 +122,10 @@ struct overlapping_vector {
                 result->at(0,0) += local_res;//bndry_results[i]->at(0, 0);
             }
         }
+/* #pragma omp task depend (in: result) */
+/*         { */
+/*             int i = 0; */
+/*         } */
 #pragma omp taskwait
     }
 
@@ -170,9 +174,11 @@ struct overlapping_vector {
 
     void make_consistent()
     {
+        bool filled = false;
+#pragma omp task shared(this->global_bndry) depend(in: this->global_bndry) depend(out: filled)
         global_bndry->fill(0.0);
         for (int i = 0; i < data.size(); i++) {
-#pragma omp task depend (in: this->bndry_data[i]) depend (out: this->global_bndry)
+#pragma omp task depend (in: this->bndry_data[i]) depend (in: filled) depend(out: this->global_bndry)
             {
 #pragma omp critical
                 {
@@ -259,7 +265,7 @@ struct overlapping_vector {
         ret->global_bndry = gko::share(global_bndry->clone());
         ret->local_to_global_bndry = local_to_global_bndry;
         for (int i = 0; i < N; i++) {
-#pragma omp task depend (in: this->inner_data[i], this->bndry_data[i])
+//#pragma omp task depend (in: this->inner_data[i], this->bndry_data[i])
             {
                 ret->data[i] = gko::share(gko::clone(data[i]));
                 ret->inner_data[i] = gko::share(ret->data[i]->create_submatrix(gko::span{0, inner_data[i]->get_size()[0]}, gko::span{0, 1}));
@@ -273,7 +279,7 @@ struct overlapping_vector {
                 ret->owning_bndry_idxs_[i] = owning_bndry_idxs_[i];
             }
         }
-#pragma omp taskwait
+//#pragma omp taskwait
         return ret;
     }
 
