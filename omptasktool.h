@@ -79,9 +79,21 @@ bucket* task_buckets=NULL;
 typedef struct {
     long unsigned int task_id;
     long unsigned int parent_task_id;
-    long unsigned int* in_dependencies;
-    long unsigned int* out_dependencies;
+    void** in_dependencies;
+    void** out_dependencies;
+    int in_cap;
+    int out_cap;
+    int in_size;
+    int out_size;
     int is_wait;
+    int is_global_wait;
+    bool is_ended;
+    double start;
+    double end;
+    bool is_critical;
+    int predecessor;
+    bool is_initial;
+    bool is_final;
 } task_data_t;
 
 task_data_t* tasks=NULL;
@@ -95,6 +107,121 @@ int dep_size=0;
 int task_index=0;
 int task_size=0;
 bool inside_parallel = false;
+long unsigned int base_task;
+double max_time=0.0;
+
+void set_base_task(long unsigned int task_id) {
+#pragma omp critical
+    if (base_task == 0) {
+        base_task = task_id;
+    }
+}
+
+int increase_bucket_size(int bucket_idx) {
+    int ret = 0;
+#pragma omp critical
+    {
+    ret = task_buckets[bucket_idx].size;
+    if (task_buckets[bucket_idx].size == task_buckets[bucket_idx].capacity) {
+      task_buckets[bucket_idx].capacity *= 2;
+      task_buckets[bucket_idx].ids = (long unsigned int*)realloc(task_buckets[bucket_idx].ids, task_buckets[bucket_idx].capacity * sizeof(long unsigned int));
+      task_buckets[bucket_idx].locations = (int*)realloc(task_buckets[bucket_idx].locations, task_buckets[bucket_idx].capacity * sizeof(int));
+    }
+    task_buckets[bucket_idx].size++;
+    }
+    return ret;
+}
+
+int get_atomic_dep_index() {
+    int ret;
+#pragma omp critical
+    {
+        if (dep_index == dep_size) {
+            dep_size *= 2;
+            dep_list = (ompt_task_dependence_t *)realloc(dep_list, dep_size * sizeof(ompt_task_dependence_t));
+        }
+        ret = dep_index;
+        dep_index++;
+    }
+    return ret;
+}
+
+int get_atomic_task_index() {
+    int ret;
+#pragma omp critical
+    {
+        if (task_index == task_size - 1) {
+            task_size *= 2;
+            dep_offsets = (int *)realloc(dep_offsets, task_size * sizeof(int));
+            task_ids = (uint64_t *)realloc(task_ids, task_size * sizeof(uint64_t));
+            parent_ids = (uint64_t *)realloc(parent_ids, task_size * sizeof(uint64_t));
+            tasks = (task_data_t *)realloc(tasks, task_size * sizeof(task_data_t));
+        }
+        ret = task_index;
+        task_index++;
+    }
+    printf("task_index: %d\n", task_index);
+    return ret;
+}
+
+int find_location(long unsigned int task_id) {
+    int location = -1;
+    int bucket = task_id % 1024;
+    for (int i = 0; i < task_buckets[bucket].size; i++) {
+        if (task_buckets[bucket].ids[i] == task_id) {
+            location = task_buckets[bucket].locations[i];
+            break;
+        }
+    }
+    return location;
+}
+
+void find_critical_path(int* adjacency, int* wait_numbers) {
+    double* dist;
+    dist = (double*)calloc(task_index * task_index, sizeof(double));
+    int pred[task_index];
+    int max_idx = -1;
+    double max_dist = -1.0;
+    for (int i = 0; i < task_index; i++) {
+        pred[i] = -1;
+    }
+    for (int i = 0; i < task_index; i++) {
+        // Max previous distance
+        double this_dist = 0.0;
+        for (int j = 0; j < i; j++) {
+            if (adjacency[j * task_index + i] == 1) {
+                if (dist[j * task_index + i] > this_dist || tasks[j].is_wait) {
+                    this_dist = dist[j * task_index + i];
+                    pred[i] = j;
+                }
+            }
+        }
+        // Next distances
+        for (int j = i + 1; j < task_index; j++) {
+            if (adjacency[i * task_index + j] == 1) {
+                if (tasks[j].is_wait) {
+                    dist[i * task_index + j] = this_dist;
+                } else {
+                    dist[i * task_index + j] = this_dist + tasks[j].end - tasks[j].start;
+                }
+                if (dist[i * task_index + j] > max_dist || tasks[j].is_wait) {
+                    max_dist = dist[i * task_index + j];
+                    max_idx = j;
+                }
+            }
+        }
+    }
+    int idx = max_idx;
+    printf("Critical path: ");
+    while (idx != -1) {
+        printf("%d ", idx);
+        tasks[idx].is_critical = true;
+        tasks[idx].predecessor = pred[idx];
+        idx = pred[idx];
+    }
+    printf("\n");
+    free(dist);
+}
 
 static void print_ids(int level)
 {
@@ -356,21 +483,12 @@ on_ompt_callback_sync_region_wait(
           printf("%" PRIu64 ": ompt_event_wait_barrier_begin: parallel_id=%" PRIu64 ", task_id=%" PRIu64 ", codeptr_ra=%p\n", ompt_get_thread_data()->value, parallel_data->value, task_data->value, codeptr_ra);
           break;
         case ompt_sync_region_taskwait:
-#pragma omp critical
-          {
-          if (dep_index == dep_size) {
-            dep_size *= 2;
-            dep_list = (ompt_task_dependence_t *)realloc(dep_list, dep_size * sizeof(ompt_task_dependence_t));
-          }
+         {
+          int dep_idx = get_atomic_dep_index();
           // NOTE: assuming the only dependencies we actually get are 2 and 3
-          dep_list[dep_index].dependence_flags = 1;
-          dep_index++;
-          if (task_index == task_size - 1) {
-            task_size *= 2;
-            dep_offsets = (int *)realloc(dep_offsets, task_size * sizeof(int));
-            tasks = (task_data_t *)realloc(tasks, task_size * sizeof(task_data_t));
-          }
-          dep_offsets[task_index + 1] = dep_offsets[task_index] + 1;
+          dep_list[dep_idx].dependence_flags = 1;
+          int task_idx = get_atomic_task_index();
+          dep_offsets[task_idx + 1] = dep_offsets[task_idx] + 1;
 
           // Create data for the wait
           task_data_t new_task;
@@ -379,24 +497,25 @@ on_ompt_callback_sync_region_wait(
           new_task.in_dependencies = NULL;
           new_task.out_dependencies = NULL;
           new_task.is_wait = 1;
-          tasks[task_index] = new_task;
+          new_task.is_final = false;
+          new_task.is_initial = false;
+          set_base_task(task_data->value);
+          if (task_data->value == base_task) {
+            new_task.is_global_wait = 1;
+          } else {
+            new_task.is_global_wait = 0;
+          }
+          tasks[task_idx] = new_task;
 
           // Put wait into bucket
           int bucket_idx = new_task.task_id % 1024;
-          if (task_buckets[bucket_idx].size == task_buckets[bucket_idx].capacity) {
-            task_buckets[bucket_idx].capacity *= 2;
-            task_buckets[bucket_idx].ids = (uint64_t *)realloc(task_buckets[bucket_idx].ids, task_buckets[bucket_idx].capacity * sizeof(uint64_t));
-            task_buckets[bucket_idx].locations = (int *)realloc(task_buckets[bucket_idx].locations, task_buckets[bucket_idx].capacity * sizeof(int));
-          }
-          int bucket_size = task_buckets[bucket_idx].size;
+          int bucket_size = increase_bucket_size(bucket_idx);
           task_buckets[bucket_idx].ids[bucket_size] = new_task.task_id;
-          task_buckets[bucket_idx].locations[bucket_size] = task_index;
-          task_buckets[bucket_idx].size++;
+          task_buckets[bucket_idx].locations[bucket_size] = task_idx;
 
-          task_index++;
-          }
           printf("%" PRIu64 ": ompt_event_wait_taskwait_begin: parallel_id=%" PRIu64 ", task_id=%" PRIu64 ", codeptr_ra=%p\n", ompt_get_thread_data()->value, parallel_data->value, task_data->value, codeptr_ra);
           break;
+          }
         case ompt_sync_region_taskgroup:
           printf("%" PRIu64 ": ompt_event_wait_taskgroup_begin: parallel_id=%" PRIu64 ", task_id=%" PRIu64 ", codeptr_ra=%p\n", ompt_get_thread_data()->value, parallel_data->value, task_data->value, codeptr_ra);
           break;
@@ -653,6 +772,8 @@ on_ompt_callback_task_create(
     int has_dependences,
     const void *codeptr_ra)
 {
+  if (!inside_parallel)
+    return;
   if(new_task_data->ptr)
     printf("0: new_task_data initially not null\n");
   new_task_data->value = ompt_get_unique_id();
@@ -673,40 +794,38 @@ on_ompt_callback_task_create(
 
   printf("%" PRIu64 ": ompt_event_task_create: parent_task_id=%" PRIu64 ", parent_task_frame.exit=%p, parent_task_frame.reenter=%p, new_task_id=%" PRIu64 ", codeptr_ra=%p, task_type=%s=%d, has_dependences=%s\n", ompt_get_thread_data()->value, encountering_task_data ? encountering_task_data->value : 0, encountering_task_frame ? encountering_task_frame->exit_frame : NULL, encountering_task_frame ? encountering_task_frame->enter_frame : NULL, new_task_data->value, codeptr_ra, buffer, type, has_dependences ? "yes" : "no");
 
-#pragma omp critical
   {
-  if (task_index == task_size - 1) {
-    task_size *= 2;
-    dep_offsets = (int *)realloc(dep_offsets, task_size * sizeof(int));
-    task_ids = (uint64_t *)realloc(task_ids, task_size * sizeof(uint64_t));
-    parent_ids = (uint64_t *)realloc(parent_ids, task_size * sizeof(uint64_t));
-    tasks = (task_data_t *)realloc(tasks, task_size * sizeof(task_data_t));
-  }
-  dep_offsets[task_index + 1] = dep_offsets[task_index];
-  task_ids[task_index + 1] = new_task_data->value;
-  parent_ids[task_index + 1] = encountering_task_data ? encountering_task_data->value : 0;
+  int task_idx = get_atomic_task_index();
+  dep_offsets[task_idx + 1] = dep_offsets[task_idx];
+  task_ids[task_idx] = new_task_data->value;
+  parent_ids[task_idx] = encountering_task_data ? encountering_task_data->value : 0;
 
   // Add new task to bucket
-  int bucket_idx = task_index % 1024;
-  if (task_buckets[bucket_idx].size == task_buckets[bucket_idx].capacity) {
-    task_buckets[bucket_idx].capacity *= 2;
-    task_buckets[bucket_idx].ids = (uint64_t *)realloc(task_buckets[bucket_idx].ids, task_buckets[bucket_idx].capacity * sizeof(uint64_t));
-    task_buckets[bucket_idx].locations = (int *)realloc(task_buckets[bucket_idx].locations, task_buckets[bucket_idx].capacity * sizeof(int));
-  }
-  int bucket_size = task_buckets[bucket_idx].size;
+  int bucket_idx = new_task_data->value % 1024;
+  int bucket_size = increase_bucket_size(bucket_idx);
   task_buckets[bucket_idx].ids[bucket_size] = new_task_data->value;
-  task_buckets[bucket_idx].locations[bucket_size] = task_index;
-  task_buckets[bucket_idx].size++;
+  task_buckets[bucket_idx].locations[bucket_size] = task_idx;
 
   // Create data for new task
   task_data_t new_task;
   new_task.task_id = new_task_data->value;
   new_task.parent_task_id = encountering_task_data ? encountering_task_data->value : 0;
-  new_task.in_dependencies = NULL;
-  new_task.out_dependencies = NULL;
+  new_task.in_dependencies = (void**) calloc(8, sizeof(void*));
+  new_task.out_dependencies = (void**) calloc(8, sizeof(void*));
+  new_task.in_cap = 8;
+  new_task.out_cap = 8;
+  new_task.in_size = 0;
+  new_task.out_size = 0;
   new_task.is_wait = 0;
-  tasks[task_index + 1] = new_task;
-  task_index++;
+  new_task.is_global_wait = 0;
+  new_task.is_ended = false;
+  new_task.start = 0.0;
+  new_task.end = 0.0;
+  new_task.is_critical = false;
+  new_task.is_initial = false;
+  new_task.is_final = false;
+  tasks[task_idx] = new_task;
+  set_base_task(new_task.parent_task_id);
   }
 }
 
@@ -717,9 +836,23 @@ on_ompt_callback_task_schedule(
     ompt_data_t *second_task_data)
 {
   printf("%" PRIu64 ": ompt_event_task_schedule: first_task_id=%" PRIu64 ", second_task_id=%" PRIu64 ", prior_task_status=%s=%d\n", ompt_get_thread_data()->value, first_task_data->value, second_task_data->value, ompt_task_status_t_values[prior_task_status], prior_task_status);
+    if (!inside_parallel)
+      return;
+    double t = omp_get_wtime();
+    int task_idx = find_location(second_task_data->value);
+    tasks[task_idx].start = t;
   if(prior_task_status == ompt_task_complete)
   {
     printf("%" PRIu64 ": ompt_event_task_end: task_id=%" PRIu64 "\n", ompt_get_thread_data()->value, first_task_data->value);
+    task_idx = find_location(first_task_data->value);
+    tasks[task_idx].is_ended = true;
+    tasks[task_idx].end = tasks[task_idx].start == 0.0 ? 0.0 : t;
+#pragma omp critical
+    {
+        if (tasks[task_idx].end - tasks[task_idx].start > max_time) {
+            max_time = tasks[task_idx].end - tasks[task_idx].start;
+        }
+    }
   }
 }
 
@@ -736,22 +869,35 @@ on_ompt_callback_task_dependences(
   /*   task_size *= 2; */
   /*   dep_offsets = (int *)realloc(dep_offsets, task_size * sizeof(int)); */
   /* } */
-  dep_offsets[task_index] += ndeps;
+  int task_idx = find_location(task_data->value);
+  dep_offsets[task_idx + 1] += ndeps;
   /* task_index++; */
 
+  int in = 0;
+  int out = 0;
   for (int i = 0; i < ndeps; i++)
   {
     printf("%" PRIu64 ": ompt_event_task_dependence %d:, flags=%d, variable address=%p\n", ompt_get_thread_data()->value, i, deps[i].dependence_flags, deps[i].variable_addr);
-#pragma omp critical
-    {
-    if (dep_index == dep_size) {
-        dep_size *= 2;
-        dep_list = (ompt_task_dependence_t *)realloc(dep_list, dep_size * sizeof(ompt_task_dependence_t));
-    }
-    dep_list[dep_index] = deps[i];
-    dep_index++;
+    int dep_idx = get_atomic_dep_index();
+    dep_list[dep_idx] = deps[i];
+    if (deps[i].dependence_flags == ompt_task_dependence_type_in) {
+        if (in == tasks[task_idx].in_cap) {
+            tasks[task_idx].in_cap *= 2;
+            tasks[task_idx].in_dependencies = (void**) realloc(tasks[task_idx].in_dependencies, tasks[task_idx].in_cap * sizeof(void*));
+        }
+        tasks[task_idx].in_dependencies[in] = deps[i].variable_addr;
+        in++;
+    } else if (deps[i].dependence_flags == ompt_task_dependence_type_inout) {
+        if (out == tasks[task_idx].out_cap) {
+            tasks[task_idx].out_cap *= 2;
+            tasks[task_idx].out_dependencies = (void**) realloc(tasks[task_idx].out_dependencies, tasks[task_idx].out_cap * sizeof(void*));
+        }
+        tasks[task_idx].out_dependencies[out] = deps[i].variable_addr;
+        out++;
     }
   }
+  tasks[task_idx].in_size = in;
+  tasks[task_idx].out_size = out;
 }
 
 static void
@@ -853,6 +999,7 @@ int ompt_initialize(
   task_ids = (uint64_t *) calloc(1024, sizeof(uint64_t));
   parent_ids = (uint64_t *) calloc(1024, sizeof(uint64_t));
   task_size = 1024;
+  base_task = 0;
 
   task_buckets = (bucket*) calloc(1024, sizeof(bucket));
   for (int i = 0; i < 1024; i++) {
@@ -882,126 +1029,285 @@ void ompt_finalize(ompt_data_t *tool_data)
   fprintf(fp, "  node [shape=box];\n");
   fprintf(fp, "  start [shape=diamond];\n");
   fprintf(fp, "  end [shape=diamond];\n");
+  int *adjacency;
+  adjacency = (int *) calloc(task_index * task_index, sizeof(int));
+  int *connectivity;
+  connectivity = (int *) calloc(task_index * task_index, sizeof(int));
   bool outgoing[task_index];
   bool incoming[task_index];
   int wait_numbers[task_index];
+  int local_wait_numbers[task_index];
   int waits = -1;
+  int local_waits = -1;
   for (int i = 0; i < task_index; i++)
   {
     outgoing[i] = false;
     incoming[i] = false;
     wait_numbers[i] = -1;
+    local_wait_numbers[i] = -1;
   }
   for (int i = 0; i < task_index; i++)
   {
     // If flag was set to 1 (taskwait), create a taskwait node with incoming edges from all previous tasks without outgoing edges
-    if (dep_offsets[i] + 1 == dep_offsets[i+1] && dep_list[dep_offsets[i]].dependence_flags == 1)
+    if (tasks[i].is_wait)
     {
-      waits++;
-      fprintf(fp, "  taskwait_%d [shape=ellipse];\n", waits);
-      for (int j = i-1; j >= 0; j--)
-      {
-        if (!outgoing[j])
-        {
-          fprintf(fp, "  task_%d_%" PRIu64 " -> taskwait_%d;\n", j, parent_ids[j], waits);
-          outgoing[j] = true;
-        }
+      if (tasks[i].is_global_wait) {
+        waits++;
+        /* fprintf(fp, "  taskwait_%d [shape=ellipse];\n", waits); */
+      } else {
+        local_waits++;
+        local_wait_numbers[i] = local_waits;
+        /* fprintf(fp, "  local_taskwait_%d [shape=ellipse];\n", local_waits); */
       }
-      incoming[i] = true;
-      // Define outgoing to be true for taskwait such as not to create an extra task node for it in the end.
-      outgoing[i] = true;
     } else {
       // Create node for each task, necessary for tasks without dependencies
-      fprintf(fp, "  task_%d_%" PRIu64 ";\n", i, parent_ids[i]);
+      /* if (tasks[i].is_ended) { */
+      /*     double saturation = (tasks[i].end - tasks[i].start) / max_time; */
+      /*     double t = tasks[i].end - tasks[i].start; */
+      /*     printf("Time: %f, Max Time: %f, Saturation: %f\n", t, max_time, saturation); */
+      /*     fprintf(fp, "  task_%d [style=filled, fillcolor=\"0.000 %.3f 1.000\"];\n", i, saturation); */
+      /* } else { */
+      /*     fprintf(fp, "  task_%d;\n", i); */
+      /* } */
     }
-    wait_numbers[i] = waits;
-    for (int j = dep_offsets[i]; j < dep_offsets[i + 1]; j++)
+    if (tasks[i].parent_task_id != base_task)
     {
-      if (dep_list[j].dependence_flags == ompt_task_dependence_type_in)
-      {
-        /* printf("%d, %d\n", i, j); */
-        bool found_in = false;
-        bool found_out = false;
-        for (int k = i - 1; k >= 0; k--)
-        {
-          for (int l = dep_offsets[k]; l < dep_offsets[k + 1]; l++)
-          {
-            if ((!found_in || !found_out) && dep_list[l].dependence_flags == ompt_task_dependence_type_inout && dep_list[l].variable_addr == dep_list[j].variable_addr)
-            {
-              if (wait_numbers[k] != -1 && wait_numbers[k] < waits) {
-                found_out = true;
-                found_in = true;
-                break;
+        int parent_location = find_location(tasks[i].parent_task_id);
+        wait_numbers[i] = wait_numbers[parent_location];
+        incoming[i] = true;
+        /* if (!tasks[i].is_wait) { */
+        /*   fprintf(fp, "  task_%d -> task_%d [color=\"blue\"];\n", parent_location, i); */
+        /* } */
+    } else {
+        wait_numbers[i] = waits;
+    }
+    if (!tasks[i].is_wait) {
+      for (int dep = 0 ; dep < tasks[i].in_size; dep++) {
+          void* dep_addr = tasks[i].in_dependencies[dep];
+          bool found_out = false;
+          bool found_in = false;
+          for (int j = i - 1; j >= 0; j--) {
+              if (tasks[j].is_wait) {
+                  continue;
               }
-              /* printf("%d, %d, %d, %d\n", i, j, k, l); */
-              fprintf(fp, "  task_%d_%" PRIu64 " -> task_%d_%" PRIu64 ";\n", k, parent_ids[k], i, parent_ids[i]);
-              found_out = true;
-              outgoing[k] = true;
-              incoming[i] = true;
-            }
+              if (wait_numbers[i] != wait_numbers[j]) {
+                  break;
+              }
+              if (found_in) {
+                  break;
+              }
+              for (int jdep = 0; jdep < tasks[j].out_size; jdep++) {
+                  if (tasks[j].out_dependencies[jdep] == dep_addr) {
+                      found_out = true;
+                      //fprintf(fp, "  task_%d -> task_%d;\n", j, i);
+                      adjacency[j * task_index + i] = 1;
+                      connectivity[j * task_index + i]++;
+                      for (int k = 0; k < j; k++) {
+                          if (connectivity[k * task_index + j] > connectivity[k * task_index + i]) {
+                              connectivity[k * task_index + i]++;
+                          }
+                      }
+                      incoming[i] = true;
+                      outgoing[j] = true;
+                      break;
+                  }
+              }
+              if (found_out) {
+                  for (int jdep = 0; jdep < tasks[j].in_size; jdep++) {
+                      if (tasks[j].in_dependencies[jdep] == dep_addr) {
+                          found_in = true;
+                          break;
+                      }
+                  }
+              }
           }
-          for (int l = dep_offsets[k]; l < dep_offsets[k + 1]; l++)
-          {
-            if (found_out && dep_list[l].dependence_flags == ompt_task_dependence_type_in && dep_list[l].variable_addr == dep_list[j].variable_addr)
-            {
-              /* printf("%d, %d, %d, %d\n", i, j, k, l); */
-              found_in = true;
-            }
-          }
-        }
       }
     }
   }
-  waits = -1;
-  while (waits < wait_numbers[0]) {
-    waits++;
-    fprintf(fp, "  start -> taskwait_%d;\n", waits);
+  /* int local_wait_locations[local_waits]; */
+  int wait_locations[waits + 1];
+  for (int i = 0; i < task_index; i++)
+  {
+      if (tasks[i].is_wait) {
+          wait_locations[wait_numbers[i]] = i;
+      }
+      /* if (tasks[i].is_wait && !tasks[i].is_global_wait) { */
+      /*     int parent_location = find_location(tasks[i].parent_task_id); */
+      /*     if (local_wait_numbers[parent_location] == -1) { */
+      /*         local_wait_numbers[parent_location] = local_wait_numbers[i]; */
+      /*     } */
+      /* } */
+  }
+  /* for (int i = 0; i < task_index; i++) */
+  /* { */
+  /*     if (tasks[i].parent_task_id != base_task) { */
+  /*         int parent_location = find_location(tasks[i].parent_task_id); */
+  /*         if (local_wait_numbers[i] == -1) { */
+  /*             local_wait_numbers[i] = local_wait_numbers[parent_location]; */
+  /*         } */
+  /*         if (tasks[i].is_wait) { */
+  /*             local_wait_numbers[parent_location] = local_wait_numbers[i]; */
+  /*         } */
+  /*     } */
+  /* } */
+  if (wait_numbers[0] != -1) {
+    tasks[wait_locations[0]].is_initial = true;
   }
   for (int i = 0; i < task_index; i++)
   {
-    if (dep_list[dep_offsets[i]].dependence_flags == 1) {
-      if (dep_list[dep_offsets[i] + 1].dependence_flags == 1) {
-        fprintf(fp, "  taskwait_%d -> taskwait_%d;\n", wait_numbers[i], wait_numbers[i + 1]);
-      }
-    }
-    if (!incoming[i])
+    if (!tasks[i].is_wait)
     {
-      if (wait_numbers[i] == -1)
+      if (!incoming[i])
       {
-        fprintf(fp, "  start -> task_%d_%" PRIu64 ";\n", i, parent_ids[i]);
-      } else {
-        fprintf(fp, "  taskwait_%d -> task_%d_%" PRIu64 ";\n", wait_numbers[i], i, parent_ids[i]);
+        if (wait_numbers[i] == -1)
+        {
+          tasks[i].is_initial = true;
+        } else {
+          adjacency[task_index * wait_locations[wait_numbers[i]] + i] = 1;
+        }
       }
-    }
-    if (!outgoing[i])
-    {
-      fprintf(fp, "  task_%d_%" PRIu64 " -> end;\n", i, parent_ids[i]);
+      if (!outgoing[i])
+      {
+        /* if (local_wait_numbers[i] != -1) { */
+        /* fprintf(fp, "  task_%d_%" PRIu64 " -> local_taskwait_%d;\n", i, tasks[i].parent_task_id, local_wait_numbers[i]); */
+        /* } else if (wait_numbers[i] == waits) { */
+        if (wait_numbers[i] == waits) {
+          printf("Task %d is final\n", i);
+          if ((tasks[i].is_wait && i != task_index - 1) || !tasks[i].is_wait) {
+              tasks[i].is_final = true;
+          }
+        } else {
+          adjacency[task_index * i + wait_locations[wait_numbers[i] + 1]] = 1;
+        }
+      }
+    } else {
+      if (tasks[i].is_global_wait) {
+        if (i == task_index - 1) {
+          tasks[wait_locations[wait_numbers[i]]].is_final = true;
+        } else {
+          int j = i + 1;
+          while (j < task_index && tasks[j].parent_task_id != base_task) {
+            j++;
+          }
+          if (tasks[j].is_wait) {
+            adjacency[task_index * wait_locations[wait_numbers[i]] + wait_locations[wait_numbers[j]]] = 1;
+          }
+        }
+      }
     }
   }
-  if (dep_list[dep_offsets[task_index - 1]].dependence_flags == 1)
+  find_critical_path(adjacency, wait_numbers);
+  for (int i = 0; i < task_index; i++)
   {
-    fprintf(fp, "  taskwait_%d -> end;\n", wait_numbers[task_index - 1]);
+    if (tasks[i].is_wait) {
+        fprintf(fp, "  taskwait_%d [shape=ellipse, penwidth=3];\n", wait_numbers[i]);
+    } else {
+      if (tasks[i].is_ended) {
+          double saturation = (tasks[i].end - tasks[i].start) / max_time;
+          double t = tasks[i].end - tasks[i].start;
+          if (tasks[i].is_critical) {
+            fprintf(fp, "  task_%d [style=filled, fillcolor=\"0.000 %.3f 1.000\", penwidth=3];\n", i, saturation);
+          } else {
+            fprintf(fp, "  task_%d [style=filled, fillcolor=\"0.000 %.3f 1.000\"];\n", i, saturation);
+          }
+      } else {
+          fprintf(fp, "  task_%d;\n", i);
+      }
+    }
+    if (tasks[i].parent_task_id != base_task)
+    {
+        int parent_location = find_location(tasks[i].parent_task_id);
+        incoming[i] = true;
+        if (!tasks[i].is_wait) {
+          fprintf(fp, "  task_%d -> task_%d [color=\"blue\"];\n", parent_location, i);
+        }
+    }
+    if (tasks[i].is_initial) {
+        if (tasks[i].is_wait) {
+            fprintf(fp, "  start -> taskwait_%d [color=\"red\", penwidth=3];\n", wait_numbers[i]);
+        } else {
+            if (tasks[i].is_critical) {
+                fprintf(fp, "  start -> task_%d [color=\"red\", penwidth=3];\n", i);
+            } else {
+                fprintf(fp, "  start -> task_%d;\n", i);
+            }
+        }
+    }
+    if (tasks[i].is_final) {
+        if (tasks[i].is_wait) {
+            printf("Task %d is final, is wait %d\n", i, tasks[i].is_wait);
+            fprintf(fp, "  taskwait_%d -> end [color=\"red\", penwidth=3];\n", wait_numbers[i]);
+        } else {
+            if (tasks[i].is_critical) {
+                fprintf(fp, "  task_%d -> end [color=\"red\", penwidth=3];\n", i);
+            } else {
+                fprintf(fp, "  task_%d -> end;\n", i);
+            }
+        }
+    }
+    for (int j = 0; j < task_index; j++)
+    {
+        if (adjacency[i * task_index + j] == 1)
+        {
+            bool found_indirect_dependency = false;
+            for (int k = 0; k < task_index; k++)
+            {
+                if (adjacency[i * task_index + k] == 1 && adjacency[k * task_index + j] == 1)
+                {
+                    adjacency[i * task_index + j] = 0;
+                    found_indirect_dependency = true;
+                    break;
+                }
+            }
+            if (!found_indirect_dependency) {
+                if (!tasks[i].is_wait) {
+                    if (tasks[j].is_wait) {
+                        if (tasks[i].is_critical) {
+                            fprintf(fp, "  task_%d -> taskwait_%d [color=\"red\", penwidth=3];\n", i, wait_numbers[j]);
+                        } else {
+                            fprintf(fp, "  task_%d -> taskwait_%d;\n", i, wait_numbers[j]);
+                        }
+                    } else {
+                        if (connectivity[i * task_index + j] > 1) {
+                            continue;
+                        }
+                        if (tasks[i].is_critical && tasks[j].is_critical && tasks[j].predecessor == i) {
+                            fprintf(fp, "  task_%d -> task_%d [color=\"red\", penwidth=3];\n", i, j);
+                        } else {
+                            fprintf(fp, "  task_%d -> task_%d;\n", i, j);
+                        }
+                    }
+                } else {
+                    if (tasks[j].is_wait) {
+                        fprintf(fp, "  taskwait_%d -> taskwait_%d [color=\"red\", penwidth=3];\n", wait_numbers[i], wait_numbers[j]);
+                    } else {
+                        if (tasks[j].is_critical) {
+                            fprintf(fp, "  taskwait_%d -> task_%d [color=\"red\", penwidth=3];\n", wait_numbers[i], j);
+                        } else {
+                            fprintf(fp, "  taskwait_%d -> task_%d;\n", wait_numbers[i], j);
+                        }
+                    }
+                }
+            }
+        }
+    }
+  }
+  for (int i = 0; i < waits; i++)
+  {
+      printf("WAIT %d at %d\n", i, wait_locations[i]);
+  }
+  for (int i = 0; i < task_index; i++) {
+      printf("TASK %d waits at %d\n", i, wait_numbers[i]);
   }
   fprintf(fp, "}\n");
   fclose(fp);
-
-  for (int i = 0; i < 1024; i++) {
-    if (task_buckets[i].size == 0)
-      continue;
-    printf("Bucket %d: %d / %d\n", i, task_buckets[i].size, task_buckets[i].capacity);
-    for (int j = 0; j < task_buckets[i].size; j++) {
-      if (tasks[task_buckets[i].locations[j]].is_wait == 1)
-        printf("  %" PRIu64 " at %d, parent: %" PRIu64 " (wait)\n", task_buckets[i].ids[j], task_buckets[i].locations[j], tasks[task_buckets[i].locations[j]].parent_task_id);
-      else
-        printf("  %" PRIu64 " at %d, parent: %" PRIu64 "\n", task_buckets[i].ids[j], task_buckets[i].locations[j], tasks[task_buckets[i].locations[j]].parent_task_id);
-    }
-  }
   free(dep_list);
   free(dep_offsets);
   free(task_ids);
   free(parent_ids);
   free(task_buckets);
   free(tasks);
+  free(adjacency);
 }
 
 ompt_start_tool_result_t* ompt_start_tool(

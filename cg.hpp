@@ -39,6 +39,7 @@ struct cg {
         /* prec->apply(b, x); */
         /* x->dot(x, rho); */
         /* std::cout << "Initial residual norm: " << sqrt(std::abs(rho->at(0,0))) << "\n"; */
+        /* prec->apply(b, x); */
         r->copy_from(b);
         A->apply(neg_one_op, x, one_op, r);
         rho_old->at(0,0) = 1.0;

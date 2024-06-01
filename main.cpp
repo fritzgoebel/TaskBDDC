@@ -133,15 +133,15 @@ int main(const int argc, const char *argv[]) {
             std::cout << "done" << std::endl;
             std::cout << "Setting up solver..." << std::endl;
             std::shared_ptr<cg> solver;
+            solver = std::make_shared<cg>(cg(A, max_it, tol, x));
 #pragma omp parallel
             {
 #pragma omp single
                 {
-                    solver = std::make_shared<cg>(cg(A, max_it, tol, x));
-#pragma omp taskwait
                     std::cout << "done" << std::endl;
                     std::cout << "Solving..." << std::endl;
                     solver->apply(b, x);
+#pragma omp taskwait
                 }
             }
 /* #pragma omp taskwait */

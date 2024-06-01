@@ -281,11 +281,11 @@ struct bddc{
         auto N = A->local_mtxs_.size();
         solve_inner(b, x);
         for (size_t i = 0; i < N; i++) {
-#pragma omp task depend (in: x->inner_data[i]) depend(out: x->bndry_data[i])
+#pragma omp task depend (in: x->inner_data[i], b->bndry_data[i]) depend(out: x->bndry_data[i])
             {
                 auto exec = A->local_mtxs_[i]->get_executor();
                 x->bndry_data[i]->copy_from(b->bndry_data[i]);
-                A_gi[i]->apply(neg_one, workspace_1->inner_data[i], one, x->bndry_data[i]);
+                A_gi[i]->apply(neg_one, x->inner_data[i], one, x->bndry_data[i]);
             }
         }
     }
@@ -294,7 +294,7 @@ struct bddc{
     {
         auto N = A->local_mtxs_.size();
         for (size_t i = 0; i < N; i++) {
-#pragma omp task depend (in: b->bndry_data[i]) depend (out: b->inner_data[i], x->bndry_data[i])
+#pragma omp task depend (in: b->bndry_data[i], b->inner_data[i]) depend (out: b->inner_data[i], x->bndry_data[i])
             {
                 x->bndry_data[i]->copy_from(b->bndry_data[i]);
                 A_ig[i]->apply(neg_one, b->bndry_data[i], one, b->inner_data[i]);
@@ -310,14 +310,27 @@ struct bddc{
         static_condensation_1(b, workspace_1);
         coarse_rhs->fill(0.0);
         for (size_t i = 0; i < N; i++) {
-#pragma omp task depend (inout: workspace_1->bndry_data[i])
+#pragma omp task depend (in: workspace_1->bndry_data[i]) depend (out: workspace_1->bndry_data[i])
             {
                 weights[i]->apply(workspace_1->bndry_data[i], workspace_1->bndry_data[i]);
             }
 #pragma omp task depend (in: workspace_1->bndry_data[i]) depend (out: this->coarse_rhs)
             {
-#pragma omp critical
-                phi_t[i]->apply(one, workspace_1->bndry_data[i], one, coarse_rhs);
+                double res = 0;
+                for (size_t j = 0; j < local_interfaces[i].size(); j++) {
+                    res = 0;
+                    auto row_ptrs = phi_t[i]->get_const_row_ptrs();
+                    auto interf = local_interfaces[i][j];
+                    auto vals = phi_t[i]->get_const_values();
+                    for (auto idx = row_ptrs[interf]; idx < row_ptrs[interf + 1]; idx++) {
+                        auto k = phi_t[i]->get_const_col_idxs()[idx];
+                        res += vals[idx] * workspace_1->bndry_data[i]->at(k);
+                    }
+#pragma omp atomic
+                    coarse_rhs->at(local_interfaces[i][j]) += res;
+                }
+/* #pragma omp critical */
+/*                 phi_t[i]->apply(one, workspace_1->bndry_data[i], one, coarse_rhs); */
             }
 #pragma omp task depend (in: workspace_1->bndry_data[i]) depend (out: workspace_2->bndry_data[i])
             {
@@ -341,13 +354,13 @@ struct bddc{
                 c_lhs->fill(0.0);
             }
         }
-#pragma omp task shared (coarse_rhs, coarse_sol) depend (in: this->coarse_rhs) depend (out: this->coarse_sol)
+#pragma omp task shared (this->coarse_rhs, this->coarse_sol) depend (in: this->coarse_rhs) depend (out: this->coarse_sol)
         {
             coarse_solver->apply(coarse_rhs, coarse_sol);
         }
 
         for (size_t i = 0; i < N; i++) {
-#pragma omp task depend (in: this->coarse_sol) depend (inout: workspace_2->bndry_data[i])
+#pragma omp task depend (in: this->coarse_sol, workspace_2->bndry_data[i]) depend (out: workspace_2->bndry_data[i], workspace_2->inner_data[i])
             {
                 phi[i]->apply(one, coarse_sol, one, workspace_2->bndry_data[i]);
                 weights[i]->apply(workspace_2->bndry_data[i], workspace_2->bndry_data[i]);

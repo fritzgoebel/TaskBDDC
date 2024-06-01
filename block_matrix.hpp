@@ -215,39 +215,10 @@ struct block_matrix {
         std::cout << "Block matrix created" << std::endl;
     }
 
-    void apply_local(int i, std::shared_ptr<vec> x, std::shared_ptr<vec> y)
-    {
-        R_[i]->apply(x, buf1[i]);
-        local_mtxs_[i]->apply(buf1[i], buf2[i]);
-#pragma omp critical
-        {
-            RIT_[i]->apply(one, buf2[i], one, y);
-            RGT_[i]->apply(one, buf2[i], one, y);
-        }
-    }
-
-    void apply(std::shared_ptr<vec> x, std::shared_ptr<vec> y)
-    {
-        y->fill(0.0);
-        for (int i = 0; i < local_mtxs_.size(); i++) {
-#pragma omp task shared(x, y)
-            apply_local(i, x, y);
-        }
-#pragma omp taskwait
-    }
-
-    void apply(std::shared_ptr<vec> alpha, std::shared_ptr<vec> x, std::shared_ptr<vec> beta, std::shared_ptr<vec> y)
-    {
-        auto y_clone = gko::share(y->clone());
-        this->apply(x, y_clone);
-        y->scale(beta);
-        y->add_scaled(alpha, y_clone);
-    }
-
     void apply_bndry(std::shared_ptr<overlapping_vector> x, std::shared_ptr<overlapping_vector> y)
     {
         for (int i = 0; i < local_mtxs_.size(); i++) {
-#pragma omp task depend (in: x->inner_data[i], x->bndry_data[i]) depend(out: y->bndry_data[i])
+#pragma omp task depend (in: x->inner_data[i], x->bndry_data[i], y->bndry_data[i]) depend(out: y->bndry_data[i])
             bndry_mtxs_[i]->apply(x->data[i], y->bndry_data[i]);
         }
         y->make_consistent();
@@ -257,7 +228,7 @@ struct block_matrix {
     {
         apply_bndry(x, y);
         for (int i = 0; i < local_mtxs_.size(); i++) {
-#pragma omp task depend (in: x->inner_data[i], x->bndry_data[i]) depend(out: y->inner_data[i])
+#pragma omp task depend (in: x->inner_data[i], x->bndry_data[i], y->inner_data[i]) depend(out: y->inner_data[i])
             inner_mtxs_[i]->apply(x->data[i], y->inner_data[i]);
         }
     }

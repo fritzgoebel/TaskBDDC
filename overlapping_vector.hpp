@@ -132,11 +132,11 @@ struct overlapping_vector {
     void scale(std::shared_ptr<vec> alpha)
     {
         for (int i = 0; i < data.size(); i++) {
-#pragma omp task depend (in: alpha) depend (inout: this->inner_data[i])
+#pragma omp task depend (in: alpha, this->inner_data[i]) depend (out: this->inner_data[i])
             {
                 inner_data[i]->scale(alpha);
             }
-#pragma omp task depend (in: alpha) depend (inout: this->bndry_data[i])
+#pragma omp task depend (in: alpha, this->bndry_data[i]) depend (out: this->bndry_data[i])
             {
                 bndry_data[i]->scale(alpha);
             }
@@ -146,11 +146,11 @@ struct overlapping_vector {
     void add_scaled(std::shared_ptr<vec> alpha, std::shared_ptr<overlapping_vector> other)
     {
         for (int i = 0; i < data.size(); i++) {
-#pragma omp task depend (in: other->inner_data[i], alpha) depend (inout: this->inner_data[i])
+#pragma omp task depend (in: other->inner_data[i], alpha, this->inner_data[i]) depend (out: this->inner_data[i])
             {
                 inner_data[i]->add_scaled(alpha, other->inner_data[i]);
             }
-#pragma omp task depend (in: other->bndry_data[i], alpha) depend (inout: this->bndry_data[i])
+#pragma omp task depend (in: other->bndry_data[i], alpha, this->bndry_data[i]) depend (out: this->bndry_data[i])
             {
                 bndry_data[i]->add_scaled(alpha, other->bndry_data[i]);
             }
@@ -160,11 +160,11 @@ struct overlapping_vector {
     void sub_scaled(std::shared_ptr<vec> alpha, std::shared_ptr<overlapping_vector> other)
     {
         for (int i = 0; i < data.size(); i++) {
-#pragma omp task depend (in: other->inner_data[i], alpha) depend (inout: this->inner_data[i])
+#pragma omp task depend (in: other->inner_data[i], alpha, this->inner_data[i]) depend (out: this->inner_data[i])
             {
                 inner_data[i]->sub_scaled(alpha, other->inner_data[i]);
             }
-#pragma omp task depend (in: other->bndry_data[i], alpha) depend (inout: this->bndry_data[i])
+#pragma omp task depend (in: other->bndry_data[i], alpha, this->bndry_data[i]) depend (out: this->bndry_data[i])
             {
                 bndry_data[i]->sub_scaled(alpha, other->bndry_data[i]);
             }
@@ -178,12 +178,16 @@ struct overlapping_vector {
 #pragma omp task shared(this->global_bndry) depend(in: this->global_bndry) depend(out: filled)
         global_bndry->fill(0.0);
         for (int i = 0; i < data.size(); i++) {
-#pragma omp task depend (in: this->bndry_data[i]) depend (in: filled) depend(out: this->global_bndry)
+#pragma omp task depend (in: this->bndry_data[i], filled) depend(out: this->global_bndry) 
             {
-#pragma omp critical
-                {
-                    RT[i]->apply(one, bndry_data[i], one, global_bndry);
+                for (int j = 0; j < bndry_idxs_[i].size(); j++) {
+#pragma omp atomic
+                    global_bndry->at(local_to_global_bndry[bndry_idxs_[i][j]], 0) += bndry_data[i]->at(j, 0);
                 }
+/* #pragma omp critical */
+/*                 { */
+/*                     RT[i]->apply(one, bndry_data[i], one, global_bndry); */
+/*                 } */
             }
         }
         for (int i = 0; i < data.size(); i++) {
@@ -265,7 +269,7 @@ struct overlapping_vector {
         ret->global_bndry = gko::share(global_bndry->clone());
         ret->local_to_global_bndry = local_to_global_bndry;
         for (int i = 0; i < N; i++) {
-//#pragma omp task depend (in: this->inner_data[i], this->bndry_data[i])
+#pragma omp task depend (in: this->inner_data[i], this->bndry_data[i]) depend (out: ret->inner_data[i], ret->bndry_data[i])
             {
                 ret->data[i] = gko::share(gko::clone(data[i]));
                 ret->inner_data[i] = gko::share(ret->data[i]->create_submatrix(gko::span{0, inner_data[i]->get_size()[0]}, gko::span{0, 1}));
