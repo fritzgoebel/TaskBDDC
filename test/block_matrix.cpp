@@ -47,8 +47,8 @@ TEST(BlockMatrix, ApplyOverlappingVector) {
                 map.get_data()[i] = i < 10 ? 0 : i < 19 ? 1 : 2;
             }
             auto partition = gko::share(part::build_from_mapping(exec, map, 3));
-            x = std::make_shared<overlapping_vector>(overlapping_vector(inner_idxs, bndry_idxs, partition, 28));
-            y = std::make_shared<overlapping_vector>(overlapping_vector(inner_idxs, bndry_idxs, partition, 28));
+            x = std::make_shared<overlapping_vector>(overlapping_vector(inner_idxs, bndry_idxs, partition, 28, exec));
+            y = std::make_shared<overlapping_vector>(overlapping_vector(inner_idxs, bndry_idxs, partition, 28, exec));
             x->fill(1.0);
             y->fill(0.0);
             matrix.apply(x, y);
@@ -90,9 +90,9 @@ TEST(BlockMatrix, ApplyOverlappingVectorLarge) {
     auto partition = matrices::build_partition();
     auto inner = matrices::inner();
     auto bndry = matrices::bndry();
-    auto A = block_matrix(local, inner, bndry);
-    x = std::make_shared<overlapping_vector>(overlapping_vector(A.inner_idxs, A.bndry_idxs, partition, global->get_size()[0]));
-    y = std::make_shared<overlapping_vector>(overlapping_vector(A.inner_idxs, A.bndry_idxs, partition, global->get_size()[0]));
+    auto A = block_matrix(local, inner, bndry, exec);
+    x = std::make_shared<overlapping_vector>(overlapping_vector(A.inner_idxs, A.bndry_idxs, partition, global->get_size()[0], exec));
+    y = std::make_shared<overlapping_vector>(overlapping_vector(A.inner_idxs, A.bndry_idxs, partition, global->get_size()[0], exec));
     x->restrict(x_ref);
     y->fill(0.0);
     A.apply(x, y);
@@ -124,9 +124,9 @@ TEST(BlockMatrix, AdvancedApplyOverlappingVectorLarge) {
     auto partition = matrices::build_partition();
     auto inner = matrices::inner();
     auto bndry = matrices::bndry();
-    auto A = block_matrix(local, inner, bndry);
-    x = std::make_shared<overlapping_vector>(overlapping_vector(A.inner_idxs, A.bndry_idxs, partition, global->get_size()[0]));
-    y = std::make_shared<overlapping_vector>(overlapping_vector(A.inner_idxs, A.bndry_idxs, partition, global->get_size()[0]));
+    auto A = block_matrix(local, inner, bndry, exec);
+    x = std::make_shared<overlapping_vector>(overlapping_vector(A.inner_idxs, A.bndry_idxs, partition, global->get_size()[0], exec));
+    y = std::make_shared<overlapping_vector>(overlapping_vector(A.inner_idxs, A.bndry_idxs, partition, global->get_size()[0], exec));
 
 #pragma omp parallel
     {

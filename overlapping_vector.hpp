@@ -30,7 +30,7 @@ struct overlapping_vector {
 
     overlapping_vector() = default;
 
-    overlapping_vector(std::vector<std::vector<int>>& inner_idxs, std::vector<std::vector<int>>& bndry_idxs, std::shared_ptr<const part> partition, int size)
+    overlapping_vector(std::vector<std::vector<int>>& inner_idxs, std::vector<std::vector<int>>& bndry_idxs, std::shared_ptr<const part> partition, int size, std::shared_ptr<gko::Executor> exec)
         : size_{size, 1}, inner_idxs_{inner_idxs}, bndry_idxs_{bndry_idxs}
     {
         int N = inner_idxs.size();
@@ -46,8 +46,8 @@ struct overlapping_vector {
                 }
             }    
         }
-        global_bndry = vec::create(gko::ReferenceExecutor::create(), gko::dim<2>{size - n_inner, 1});
-        one = gko::initialize<vec>({1.0}, gko::ReferenceExecutor::create());
+        global_bndry = vec::create(exec, gko::dim<2>{size - n_inner, 1});
+        one = gko::initialize<vec>({1.0}, exec);
         data.resize(N);
         inner_data.resize(N);
         bndry_data.resize(N);
@@ -59,7 +59,6 @@ struct overlapping_vector {
         for (gko::size_type i = 0; i < N; i++) {
 //#pragma omp task 
             {
-                auto exec = gko::ReferenceExecutor::create();
                 gko::size_type local_size = inner_idxs[i].size() + bndry_idxs[i].size();
                 gko::size_type local_inner = inner_idxs[i].size();
                 auto local_vec = gko::share(vec::create(exec, gko::dim<2>{local_size, 1}));
@@ -184,10 +183,6 @@ struct overlapping_vector {
 #pragma omp atomic
                     global_bndry->at(local_to_global_bndry[bndry_idxs_[i][j]], 0) += bndry_data[i]->at(j, 0);
                 }
-/* #pragma omp critical */
-/*                 { */
-/*                     RT[i]->apply(one, bndry_data[i], one, global_bndry); */
-/*                 } */
             }
         }
         for (int i = 0; i < data.size(); i++) {
@@ -271,11 +266,12 @@ struct overlapping_vector {
         for (int i = 0; i < N; i++) {
 #pragma omp task depend (in: this->inner_data[i], this->bndry_data[i]) depend (out: ret->inner_data[i], ret->bndry_data[i])
             {
+                auto exec = data[i]->get_executor();
                 ret->data[i] = gko::share(gko::clone(data[i]));
                 ret->inner_data[i] = gko::share(ret->data[i]->create_submatrix(gko::span{0, inner_data[i]->get_size()[0]}, gko::span{0, 1}));
                 ret->bndry_data[i] = gko::share(ret->data[i]->create_submatrix(gko::span{inner_data[i]->get_size()[0], data[i]->get_size()[0]}, gko::span{0, 1}));
-                ret->inner_results[i] = gko::share(vec::create(gko::ReferenceExecutor::create(), gko::dim<2>{1, 1}));
-                ret->bndry_results[i] = gko::share(vec::create(gko::ReferenceExecutor::create(), gko::dim<2>{1, 1}));
+                ret->inner_results[i] = gko::share(vec::create(exec, gko::dim<2>{1, 1}));
+                ret->bndry_results[i] = gko::share(vec::create(exec, gko::dim<2>{1, 1}));
                 ret->R[i] = gko::share(gko::clone(R[i]));
                 ret->RT[i] = gko::share(gko::clone(RT[i]));
                 ret->inner_idxs_[i] = inner_idxs_[i];

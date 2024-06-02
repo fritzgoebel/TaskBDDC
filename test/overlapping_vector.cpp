@@ -19,7 +19,7 @@ TEST(OverlappingVector, ConstructorSinglePart) {
     {
 #pragma omp single
         {
-            vec = overlapping_vector(inner_idxs, bndry_idxs, partition, 10);
+            vec = overlapping_vector(inner_idxs, bndry_idxs, partition, 10, exec);
         }
     }
     ASSERT_EQ(vec.get_size()[0], 10);

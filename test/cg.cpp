@@ -35,16 +35,16 @@ TEST(cg, ApplyEquivalentToGinkgo)
     auto partition = matrices::build_partition();
     auto inner = matrices::inner();
     auto bndry = matrices::bndry();
-    auto A = std::make_shared<block_matrix>(block_matrix(local, inner, bndry));
-    x = std::make_shared<overlapping_vector>(overlapping_vector(inner, bndry, partition, global->get_size()[0]));
-    y = std::make_shared<overlapping_vector>(overlapping_vector(inner, bndry, partition, global->get_size()[0]));
+    auto A = std::make_shared<block_matrix>(block_matrix(local, inner, bndry, exec));
+    x = std::make_shared<overlapping_vector>(overlapping_vector(inner, bndry, partition, global->get_size()[0], exec));
+    y = std::make_shared<overlapping_vector>(overlapping_vector(inner, bndry, partition, global->get_size()[0], exec));
 #pragma omp parallel 
     {
 #pragma omp single
         {
             x->restrict(x_ref);
             y->restrict(y_ref);
-            auto solver = cg(A, 100, 1e-8, y);
+            auto solver = cg(A, 100, 1e-8, y, exec);
             solver.apply(y, x);
             x->prolongate(y_ref);
         }

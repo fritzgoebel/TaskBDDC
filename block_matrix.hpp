@@ -52,7 +52,8 @@ struct block_matrix {
         return result;
     }
 
-    block_matrix(std::vector<gko::matrix_data<double, int>> local_data, std::vector<std::vector<int>> inner_idxs, std::vector<std::vector<int>> boundary_idxs) : inner_idxs{inner_idxs}
+    block_matrix(std::vector<gko::matrix_data<double, int>> local_data, std::vector<std::vector<int>> inner_idxs, 
+                 std::vector<std::vector<int>> boundary_idxs, std::shared_ptr<gko::Executor> exec) : inner_idxs{inner_idxs}
     {
         std::cout << "Creating block matrix" << std::endl;
         size_ = local_data[0].size;
@@ -65,8 +66,8 @@ struct block_matrix {
         RGT_.resize(N);
         buf1.resize(N);
         buf2.resize(N);
-        one = gko::initialize<vec>({1.0}, gko::ReferenceExecutor::create());
-        neg_one = gko::initialize<vec>({-1.0}, gko::ReferenceExecutor::create());
+        one = gko::initialize<vec>({1.0}, exec);
+        neg_one = gko::initialize<vec>({-1.0}, exec);
         
         std::vector<std::vector<int>> bndry_to_subdomains(size_[0], std::vector<int>());
         std::set<std::vector<int>> unique_rank_sets;
@@ -164,7 +165,6 @@ struct block_matrix {
         for (int i = 0; i < N; i++) {
 //#pragma omp task shared(inner_idxs, bndry_idxs, local_mtxs_, inner_mtxs_, bndry_mtxs_, R_, RIT_, RGT_, buf1, buf2)
             {
-                auto exec = gko::ReferenceExecutor::create();
                 std::map<int, int> global_to_local{};
                 std::vector<int> local_to_global;
                 int idx = 0;

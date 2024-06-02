@@ -3,6 +3,7 @@
 #include <vector>
 #include "block_matrix.hpp"
 #include "ginkgo/core/base/array.hpp"
+#include "ginkgo/core/base/executor.hpp"
 #include "ginkgo/core/matrix/permutation.hpp"
 #include "ginkgo/core/reorder/amd.hpp"
 
@@ -23,6 +24,7 @@ struct bddc{
         workspace_1 = buffer->clone();
         workspace_2 = buffer->clone();
         workspace_3 = buffer->clone();
+        auto exec = A->local_mtxs_[0]->get_executor();
 #pragma omp taskwait
         for (size_t i = 0; i < N; i++) {
 #pragma omp task shared(inner_solvers)
@@ -30,7 +32,6 @@ struct bddc{
                 // Set up inner solvers
                 auto local_mtx = A->local_mtxs_[i];
                 auto inner_mtx = gko::share(A->inner_mtxs_[i]->create_submatrix(gko::span{0, A->inner_mtxs_[i]->get_size()[0]}, gko::span{0, A->inner_mtxs_[i]->get_size()[0]}));
-                auto exec = local_mtx->get_executor();
                 inner_amd[i] = gko::experimental::reorder::Amd<int>::build().on(exec)->generate(inner_mtx);
                 auto perm_A = gko::share(inner_mtx->permute(inner_amd[i]));
                 inner_solvers[i] = gko::experimental::solver::Direct<double, int>::build()
@@ -42,8 +43,8 @@ struct bddc{
             }
         }
 
-        one = gko::initialize<vec>({1.0}, gko::ReferenceExecutor::create());
-        neg_one = gko::initialize<vec>({-1.0}, gko::ReferenceExecutor::create());
+        one = gko::initialize<vec>({1.0}, exec);
+        neg_one = gko::initialize<vec>({-1.0}, exec);
 
         // Set up stiffness scaling operators
         weights.resize(N);
@@ -52,7 +53,6 @@ struct bddc{
 #pragma omp task shared (local_diag_vec, buffer) depend (out: buffer->bndry_data[i])
             {
                 auto local_mtx = A->local_mtxs_[i];
-                auto exec = local_mtx->get_executor();
                 auto local_diag = gko::share(local_mtx->extract_diagonal());
                 auto local_diag_array = gko::make_const_array_view(exec, local_diag->get_size()[0], local_diag->get_const_values());
                 local_diag_vec[i] = gko::clone(vec::create_const(exec, gko::dim<2>{local_diag->get_size()[0], 1}, std::move(local_diag_array), 1));
@@ -65,7 +65,6 @@ struct bddc{
         for (size_t i = 0; i < N; i++) {
 #pragma omp task shared (local_diag_vec, buffer) depend (in: buffer->bndry_data[i])
             {
-                auto exec = A->local_mtxs_[i]->get_executor();
                 auto n = buffer->bndry_data[i]->get_size()[0];
                 auto n_inner = buffer->inner_data[i]->get_size()[0];
                 auto global_diag_array = gko::make_const_array_view(exec, n, buffer->bndry_data[i]->get_const_values());
@@ -95,7 +94,6 @@ struct bddc{
 #pragma omp task shared (coarse_data)
             {
                 auto local_mtx = A->local_mtxs_[i];
-                auto exec = local_mtx->get_executor();
                 size_t n_inner_dofs = A->inner_idxs[i].size();
                 size_t n_edges = 0;
                 size_t n_edge_dofs = 0;
@@ -249,7 +247,6 @@ struct bddc{
             }
         }
 #pragma omp taskwait
-        auto exec = A->local_mtxs_[0]->get_executor();
         coarse_data.sum_duplicates();
         coarse_data.remove_zeros();
         auto A_coarse = gko::share(mtx::create(exec));

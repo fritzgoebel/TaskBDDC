@@ -5,7 +5,7 @@
 #include <memory>
 #include <omp.h>
 
-#include "omptasktool.h"
+/* #include "omptasktool.h" */
 
 using mat_data = gko::matrix_data<double, int>;
 using mtx = gko::matrix::Csr<double, int>;
@@ -121,19 +121,19 @@ int main(const int argc, const char *argv[]) {
             auto partition = gko::share(part::build_from_mapping(exec, map, n));
             std::cout << "done" << std::endl;
             std::cout << "Setting up matrix..." << std::endl;
-            auto A = std::make_shared<block_matrix>(block_matrix(local_data, inner, bndry));
+            auto A = std::make_shared<block_matrix>(block_matrix(local_data, inner, bndry, exec));
 /* #pragma omp taskwait */
             std::cout << "done" << std::endl;
             std::cout << "Setting up vectors..." << std::endl;
-            auto b = std::make_shared<overlapping_vector>(overlapping_vector(A->inner_idxs, A->bndry_idxs, partition, n_rows));
-            auto x = std::make_shared<overlapping_vector>(overlapping_vector(A->inner_idxs, A->bndry_idxs, partition, n_rows));
+            auto b = std::make_shared<overlapping_vector>(overlapping_vector(A->inner_idxs, A->bndry_idxs, partition, n_rows, exec));
+            auto x = std::make_shared<overlapping_vector>(overlapping_vector(A->inner_idxs, A->bndry_idxs, partition, n_rows, exec));
             x->fill(0.0);
             b->restrict(rhs);
 /* #pragma omp taskwait */
             std::cout << "done" << std::endl;
             std::cout << "Setting up solver..." << std::endl;
             std::shared_ptr<cg> solver;
-            solver = std::make_shared<cg>(cg(A, max_it, tol, x));
+            solver = std::make_shared<cg>(cg(A, max_it, tol, x, exec));
 #pragma omp parallel
             {
 #pragma omp single

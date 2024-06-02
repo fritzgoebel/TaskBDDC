@@ -5,6 +5,7 @@ namespace util {
         std::vector<mat_data> blocks;
         std::vector<std::vector<int>> inner_idxs;
         std::vector<std::vector<int>> boundary_idxs;
+        auto exec = gko::ReferenceExecutor::create();
         for (int i = 0; i < n_parts; i++) {
             mat_data local_data{gko::dim<2>{n_parts * (local_size - 1) + 1, n_parts * (local_size - 1) + 1}};
             std::vector<int> inner;
@@ -36,7 +37,7 @@ namespace util {
             inner_idxs.push_back(inner);
             boundary_idxs.push_back(boundary);
         }
-        return block_matrix{blocks, inner_idxs, boundary_idxs};
+        return block_matrix{blocks, inner_idxs, boundary_idxs, exec};
     }
 
     void assume_correct_matrix(int n_parts, int local_size, block_matrix& matrix) {

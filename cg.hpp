@@ -3,6 +3,7 @@
 #include <omp.h>
 #include <vector>
 
+#include "ginkgo/core/base/executor.hpp"
 #include "ginkgo/core/matrix/dense.hpp"
 
 #include "bddc.hpp"
@@ -11,9 +12,9 @@ struct cg {
     using mtx = gko::matrix::Csr<double>;
     using vec = gko::matrix::Dense<double>;
 
-    cg(std::shared_ptr<block_matrix> A, int max_it, double tol, std::shared_ptr<overlapping_vector> ref, bool nsp = false)
+    cg(std::shared_ptr<block_matrix> A, int max_it, double tol, std::shared_ptr<overlapping_vector> ref, 
+       std::shared_ptr<gko::Executor> exec, bool nsp = false)
         : A(A), max_it(max_it), tol(tol), nsp(nsp) {
-            auto exec = gko::ReferenceExecutor::create();
             auto vec_size = gko::dim<2>{A->size_[0], 1};
             r = ref->clone();
             p = ref->clone();

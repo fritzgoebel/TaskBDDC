@@ -5,7 +5,7 @@ overlapping_vector setup_three_part_vector() {
     auto exec = gko::ReferenceExecutor::create();
     auto partition = gko::share(part::build_from_global_size_uniform(exec, 3, 30));
 
-    auto vec = overlapping_vector(inner_idxs, bndry_idxs, partition, 30);
+    auto vec = overlapping_vector(inner_idxs, bndry_idxs, partition, 30, exec);
     return vec;
 }
 
